@@ -29,6 +29,7 @@ import pandas as pd
 import math
 import csv
 from scipy.optimize import curve_fit
+import os
 
 # 1) DETERMINISM -------------------------------------------------- 
 # ? Ensures reproducible results across runs.. 
@@ -262,7 +263,7 @@ def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
     print(f"Optimization completed in {elapsed:.1f} s")
     print(f"Epoch {epoch:4d} | Loss {total:.2e} | E {rounded.tolist()}")
 
-    # final predicted curve + CSV save
+    # final predicted curve
     with torch.no_grad():
         E_final    = model(inp)
         Fpred_full, _ = stiffness_calc(
@@ -270,10 +271,17 @@ def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
             E_final[:,0], E_final[:,1], E_final[:,2],
             Rworm, h1, h2, h3, δobs, stif
         )
+    
+    # Create output folder with predicted moduli
+    Evals_int  = E_final.mean(dim=0).cpu().numpy().round().astype(int)
+    output_dir = f"results_{Evals_int[0]}_{Evals_int[1]}_{Evals_int[2]}"
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Results will be saved to: {output_dir}/")
+    
+    # Save CSV with predictions
     deltaex_np = δobs.squeeze(1).cpu().numpy()
     Fpred_np   = Fpred_full.squeeze(1).cpu().numpy()
-    Evals_int  = E_final.mean(dim=0).cpu().numpy().round().astype(int)
-    jobName = f"Pred_{Evals_int[0]}_{Evals_int[1]}_{Evals_int[2]}.csv"
+    jobName = os.path.join(output_dir, f"Pred_{Evals_int[0]}_{Evals_int[1]}_{Evals_int[2]}.csv")
 
     with open(jobName, 'w', newline='') as f:
         writer = csv.writer(f)
@@ -282,7 +290,7 @@ def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
             writer.writerow([d, fp])
     print(f"Saved predictions to {jobName}")
 
-    # plots
+    # Save plots to output folder
     plt.figure()
     plt.plot(δobs, Fobs, 'bo', label='meas')
     plt.plot(δobs, Fpred_full, 'r-', label='pred')
@@ -290,7 +298,7 @@ def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
     plt.ylabel("Force F (N)")
     plt.title("Measured vs Predicted Force–Indentation Curve")
     plt.legend()
-    plt.savefig("force_indentation.png", dpi=300)
+    plt.savefig(os.path.join(output_dir, "force_indentation.png"), dpi=300)
     plt.close()
 
     plt.figure()
@@ -301,7 +309,7 @@ def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
     plt.ylabel("Loss value")
     plt.title("Loss Curves")
     plt.legend()
-    plt.savefig("loss_curves.png", dpi=300)
+    plt.savefig(os.path.join(output_dir, "loss_curves.png"), dpi=300)
     plt.close()
 
     return model
@@ -313,5 +321,5 @@ if __name__ == '__main__':
         patience=250,
         tighten_epochs=1500,
         E_min_max=[(30,250),(300,1200),(30,300)],
-        stable_epochs=6 # for example, require 5 consecutive stable
+        stable_epochs=6
     )
