@@ -20,7 +20,7 @@ Main inputs to train():
 import time
 import random
 import numpy as np
-import torch
+import torch  #Open-source machine learning library
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -30,12 +30,14 @@ import math
 import csv
 from scipy.optimize import curve_fit
 
-# 1) DETERMINISM --------------------------------------------------
+# 1) DETERMINISM -------------------------------------------------- 
+# ? Ensures reproducible results across runs.. 
+# Meaning if we changed the seed every few runs, we would get different results, that will give a better idea of the performance of the model?
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
+torch.cuda.manual_seed_all(SEED)  #if using multi-GPU
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 torch.use_deterministic_algorithms(True)
@@ -210,7 +212,7 @@ def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
     prev_rounded = None
     best_loss, no_imp = float('inf'), 0
 
-    for epoch in range(1, 10001):
+    for epoch in range(1, 10001): # max 10k epochs
         optimizer.zero_grad()
         total, dL, oL, E_pred, Fpred = loss_fn(
             model, inp, Fobs, δobs,
@@ -235,6 +237,7 @@ def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
             no_imp += 1
 
         # first-decimal stability early-stop
+        #On our run this got trigger first before no improvement condition
         E_means = E_pred.mean(dim=0)
         rounded = torch.round(E_means * 10) / 10  # first decimal
         if prev_rounded is not None and torch.all(rounded == prev_rounded):
@@ -244,14 +247,14 @@ def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
         prev_rounded = rounded
 
         # stopping conditions
-        if no_imp >= patience:
+        if no_imp >= patience: #That (NO improvement condition) did not get trigger 
             print(f"Early stop (no loss imp.) @ epoch {epoch}")
             break
         if stable_count >= stable_epochs:
             print(f"Stopped: E stable at {rounded.tolist()} for {stable_epochs} epochs")
             break
 
-        if epoch % 100 == 0:
+        if epoch % 100 == 0: #It shows training progress every 100 epochs
             lr = scheduler.get_last_lr()[0]
             print(f"Epoch {epoch:4d} | Loss {total:.2e} | E {rounded.tolist()} | LR {lr:.1e}")
 
@@ -280,8 +283,26 @@ def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
     print(f"Saved predictions to {jobName}")
 
     # plots
-    plt.figure(); plt.plot(δobs, Fobs, 'bo', label='meas'); plt.plot(δobs, Fpred_full, 'r-', label='pred'); plt.legend(); plt.show()
-    plt.figure(); plt.plot(history['total'], label='total'); plt.plot(history['data'], label='data'); plt.plot(history['order'], label='order'); plt.legend(); plt.show()
+    plt.figure()
+    plt.plot(δobs, Fobs, 'bo', label='meas')
+    plt.plot(δobs, Fpred_full, 'r-', label='pred')
+    plt.xlabel("Indentation δ (m)")
+    plt.ylabel("Force F (N)")
+    plt.title("Measured vs Predicted Force–Indentation Curve")
+    plt.legend()
+    plt.savefig("force_indentation.png", dpi=300)
+    plt.close()
+
+    plt.figure()
+    plt.plot(history['total'], label='total')
+    plt.plot(history['data'], label='data')
+    plt.plot(history['order'], label='order')
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss value")
+    plt.title("Loss Curves")
+    plt.legend()
+    plt.savefig("loss_curves.png", dpi=300)
+    plt.close()
 
     return model
 
