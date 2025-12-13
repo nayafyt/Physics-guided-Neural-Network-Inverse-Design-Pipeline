@@ -9,13 +9,6 @@ PGNN inverse hyperelastic training with:
   - CSV export of final predicted force-indentation curve
     (filename includes predicted average moduli)
   - Timer for optimization duration
-
-Main inputs to train():
-  path          : str  - CSV file path with columns 'ind' and 'force'
-  patience      : int  - epochs of no improvement before early stopping
-  tighten_epochs: int  - T_max for CosineAnnealingLR
-  E_min_max     : list - bounds for E1, E2, E3 as [(min1,max1),...]
-  stable_epochs : int  - number of consecutive epochs with no first-decimal change
 """
 import time
 import random
@@ -24,12 +17,13 @@ import torch  #Open-source machine learning library
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
-import matplotlib.pyplot as plt
 import pandas as pd
 import math
-import csv
 from scipy.optimize import curve_fit
 import os
+
+# Import visualization utilities
+from visualization import save_predictions_csv, plot_force_indentation, plot_loss_curves
 
 # 1) DETERMINISM -------------------------------------------------- 
 # ? Ensures reproducible results across runs.. 
@@ -53,33 +47,38 @@ class CustomActivation(nn.Module):
         # tanh in [-1,1] -> scale to [E_min,E_max]
         return self.E_min + (self.E_max - self.E_min) * (torch.tanh(x) + 1) / 2
 
-class PGNN(nn.Module):
-    """Physics-Guided NN: input (force,indentation) -> predicted [E1,E2,E3]."""
-    def __init__(self, E_min_max):
+class GenericPGNN(nn.Module):
+    """
+    Generic Physics-Guided NN with configurable input/output dims and bounds.
+    For your indentation problem: input_dim=2, output_dim=3.
+    """
+    def __init__(self, input_dim, output_dim, bounds):
         super().__init__()
-        # hidden layers: 2 -> 72 -> 72 -> 72 -> raw 3 outputs
-        self.hidden = nn.Sequential(
-            
-            nn.Linear(2, 72), nn.BatchNorm1d(72), nn.Tanh(),
-            nn.Linear(72,72), nn.BatchNorm1d(72), nn.Tanh(),
-            nn.Linear(72,72), nn.BatchNorm1d(72), nn.Tanh(),
-            nn.Linear(72,3)
 
-            #nn.Linear(2, 92), nn.BatchNorm1d(92), nn.Tanh(),
-            #nn.Linear(92,92), nn.BatchNorm1d(92), nn.Tanh(),
-            #nn.Linear(92,3)
-        )
-        # per-output bounding activations
-        self.act1 = CustomActivation(*E_min_max[0])
-        self.act2 = CustomActivation(*E_min_max[1])
-        self.act3 = CustomActivation(*E_min_max[2])
+        hidden_dim = 72
+
+        layers = []
+        prev = input_dim
+        for _ in range(3):  # 3 hidden layers of size 72
+            layers.append(nn.Linear(prev, hidden_dim))
+            layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.Tanh())
+            prev = hidden_dim
+        layers.append(nn.Linear(hidden_dim, output_dim))
+        self.hidden = nn.Sequential(*layers)
+
+        self.activations = nn.ModuleList([
+            CustomActivation(bounds[i][0], bounds[i][1])
+            for i in range(output_dim)
+        ])
+
     def forward(self, x):
         raw = self.hidden(x)
-        # apply bounds
-        E1 = self.act1(raw[:,0].unsqueeze(1)).squeeze(1)
-        E2 = self.act2(raw[:,1].unsqueeze(1)).squeeze(1)
-        E3 = self.act3(raw[:,2].unsqueeze(1)).squeeze(1)
-        return torch.stack([E1,E2,E3], dim=1)
+        outputs = []
+        for i in range(len(self.activations)):
+            Ei = self.activations[i](raw[:, i].unsqueeze(1)).squeeze(1)
+            outputs.append(Ei)
+        return torch.stack(outputs, dim=1)
 
 def init_weights(m):
     """Xavier init for Linear, standard for BN."""
@@ -99,20 +98,6 @@ def func(x, a):
     maxX = max(x)
     eXp = 1.5 if maxX>0.5 else 2.0
     return a * x**eXp
-
-def load_data(path):
-    """Load CSV with 'ind','force'; convert to torch tensors in SI units."""
-    df = pd.read_csv(path)
-    df['ind']   = pd.to_numeric(df['ind'],   errors='coerce')
-    df['force'] = pd.to_numeric(df['force'], errors='coerce')
-    ind   = df['ind'].values * 1e-3   # mm -> m
-    force = df['force'].values * 1e-3 # mN -> N
-    popt,_ = curve_fit(func, ind, force)
-    return (
-        torch.tensor(force, dtype=torch.float32).unsqueeze(1),
-        torch.tensor(ind,   dtype=torch.float32).unsqueeze(1),
-        popt
-    )
 
 def stiffness_calc(EInd, nu, nuInd, R,
                    E1, E2, E3, Rworm,
@@ -155,81 +140,119 @@ def stiffness_calc(EInd, nu, nuInd, R,
     # predicted force
     return k_eff * δ**eXp, k_eff
 
-def generate_data(path):
-    """Load observed data + generate synthetic 'true' curve (unused)."""
-    torch.manual_seed(SEED)
-    Fobs, δobs, stif = load_data(path)
-    # dummy true moduli & geometry
-    E1, E2, E3, EInd = 144, 2461, 1177, 210e6
-    h1, h2, h3 = 0.6e-3, 1.7e-3, 52.6e-3
-    nu, nuInd, R, Rworm = 0.45, 0.33, 5e-3, 28e-3
-    _, _ = stiffness_calc(
-        EInd, nu, nuInd, R,
-        E1, E2, E3, Rworm,
-        h1, h2, h3, δobs, stif
-    )
-    return Fobs, δobs, nu, nuInd, EInd, R, Rworm, h1, h2, h3, stif
+# 4) Physics problem------------------------------
 
-# 4) LOSS & TRAINING ----------------------------------------------
-def loss_fn(model, inp, Fobs, δobs,
-            nu, nuInd, EInd, R, Rworm,
-            h1, h2, h3, stif,
-            wOrder):
-    """Compute total loss = MSE(data) + wOrder * hinge(E3>E2)."""
-    E_pred = model(inp)
-    E1, E2, E3 = E_pred[:,0], E_pred[:,1], E_pred[:,2]
-    Fpred, _ = stiffness_calc(
-        EInd, nu, nuInd, R,
-        E1, E2, E3, Rworm,
-        h1, h2, h3, δobs, stif
-    )
-    data_loss  = torch.mean((Fobs - Fpred)**2)
-    order_vio  = torch.mean(torch.relu(E3 - E2)**2)
-    total_loss = data_loss + wOrder * order_vio
-    return total_loss, data_loss, order_vio, E_pred, Fpred
+class IndentationPhysicsProblem:
+    def __init__(self):
+        self.h1, self.h2, self.h3 = 0.6e-3, 1.7e-3, 52.6e-3
+        self.EInd = 210e6
+        self.R = 5e-3
+        self.Rworm = 28e-3
+        self.nu = 0.45
+        self.nuInd = 0.33
+        self.stif_fit = None
+        self._Fobs = None
+        self._δobs = None
 
-def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
+    def get_input_output_dims(self):
+        """This problem has 2 inputs (force, indentation) and 3 outputs (E1,E2,E3)."""
+        return 2, 3
+
+    def load_data(self, path):
+        """Load CSV with 'ind','force'; convert to torch tensors in SI units."""
+        df = pd.read_csv(path)
+        df['ind'] = pd.to_numeric(df['ind'], errors='coerce')
+        df['force'] = pd.to_numeric(df['force'], errors='coerce')
+        ind = df['ind'].values * 1e-3  # mm -> m
+        force = df['force'].values * 1e-3  # mN -> N
+
+        popt, _ = curve_fit(func, ind, force)
+        self.stif_fit = popt
+
+        # Construct input exactly as original: torch.cat([Fobs, δobs], dim=1)
+        Fobs = torch.tensor(force, dtype=torch.float32).unsqueeze(1)
+        δobs = torch.tensor(ind, dtype=torch.float32).unsqueeze(1)
+        inp = torch.cat([Fobs, δobs], dim=1)  # [N, 2]
+        obs = Fobs  # observed force
+
+        # store for plotting
+        self._Fobs = Fobs
+        self._δobs = δobs
+
+        return inp, obs
+
+    def forward_physics(self, inp, predictions):
+        """Compute predicted force from E1, E2, E3."""
+        # indentation is second column
+        δ = inp[:, 1:2]  # shape (N,1)
+        δ_flat = δ.squeeze(1)  # shape (N,)
+        E1 = predictions[:, 0]
+        E2 = predictions[:, 1]
+        E3 = predictions[:, 2]
+
+        Fpred, _ = stiffness_calc(
+            self.EInd, self.nu, self.nuInd, self.R,
+            E1, E2, E3, self.Rworm,
+            self.h1, self.h2, self.h3,
+            δ_flat, self.stif_fit
+        )
+        return Fpred.unsqueeze(1)
+
+    def constraint_loss(self, predictions):
+        """Hinge penalty enforcing E2 >= E3."""
+        E2 = predictions[:, 1]
+        E3 = predictions[:, 2]
+        return torch.mean(torch.relu(E3 - E2)**2)
+
+# 5) Generic loss & training-------------------------------------------
+
+def loss_fn(model, inp, obs, problem, wOrder=1.0):
     """
-    Train PGNN on (force,delta) data in `path`, stopping when:
-      - no loss improvement for `patience` epochs, or
-      - predicted E means stable (first decimal) for `stable_epochs` epochs.
+    Generic loss:
+        total = MSE(obs, physics_output) + wOrder * constraint_loss
+    """
+    predictions = model(inp)
+    physics_output = problem.forward_physics(inp, predictions)
+    data_loss = torch.mean((obs - physics_output)**2)
+    constraint = problem.constraint_loss(predictions)
+    total_loss = data_loss + wOrder * constraint
+    return total_loss, data_loss, constraint, predictions, physics_output
 
-    Returns trained model.
+def train(problem, bounds, data_path,
+          patience=250, tighten_epochs=1500, stable_epochs=6):
+    """
+    Generic training loop for any PhysicsProblem.
     """
     t0 = time.time()
 
-    # instantiate model
-    model = PGNN(E_min_max)
+    input_dim, output_dim = problem.get_input_output_dims()
+    model = GenericPGNN(input_dim, output_dim, bounds)
     model.apply(init_weights)
     optimizer = optim.Adam(model.hidden.parameters(), lr=1e-3)
     scheduler = CosineAnnealingLR(optimizer, T_max=tighten_epochs, eta_min=1e-5)
 
-    # load and prepare data
-    Fobs, δobs, nu, nuInd, EInd, R, Rworm, h1, h2, h3, stif = generate_data(path)
-    inp = torch.cat([Fobs, δobs], dim=1)  # [N,2]
-
-    history = {'total':[], 'data':[], 'order':[]}
+    inp, obs = problem.load_data(data_path)
+    print(f"Input shape: {inp.shape}")
+    print(f"Input first row: {inp[0]}")
+    print(f"Obs shape: {obs.shape}")
+    print(f"Stif_fit: {problem.stif_fit}")
+    history = {'total': [], 'data': [], 'constraint': []}
+    best_loss = float('inf')
+    no_imp = 0
     stable_count = 0
     prev_rounded = None
-    best_loss, no_imp = float('inf'), 0
 
-    for epoch in range(1, 10001): # max 10k epochs
+    for epoch in range(1, 10001):
         optimizer.zero_grad()
-        total, dL, oL, E_pred, Fpred = loss_fn(
-            model, inp, Fobs, δobs,
-            nu, nuInd, EInd, R, Rworm,
-            h1, h2, h3, stif,
-            wOrder=1.0
-        )
+        total, dL, oL, pred, phys = loss_fn(model, inp, obs, problem, wOrder=1.0)
         total.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         scheduler.step()
 
-        # record
         history['total'].append(total.item())
         history['data'].append(dL.item())
-        history['order'].append(oL.item())
+        history['constraint'].append(oL.item())
 
         # check improvement
         if total.item() < best_loss:
@@ -239,8 +262,8 @@ def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
 
         # first-decimal stability early-stop
         #On our run this got trigger first before no improvement condition
-        E_means = E_pred.mean(dim=0)
-        rounded = torch.round(E_means * 10) / 10  # first decimal
+        pred_means = pred.mean(dim=0)
+        rounded = torch.round(pred_means * 10) / 10 # first decimal
         if prev_rounded is not None and torch.all(rounded == prev_rounded):
             stable_count += 1
         else:
@@ -257,7 +280,7 @@ def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
 
         if epoch % 100 == 0: #It shows training progress every 100 epochs
             lr = scheduler.get_last_lr()[0]
-            print(f"Epoch {epoch:4d} | Loss {total:.2e} | E {rounded.tolist()} | LR {lr:.1e}")
+            print(f"Epoch {epoch:4d} | Loss {total:.3e} | E {rounded.tolist()} | LR {lr:.1e}")
 
     elapsed = time.time() - t0
     print(f"Optimization completed in {elapsed:.1f} s")
@@ -265,61 +288,41 @@ def train(path, patience, tighten_epochs, E_min_max, stable_epochs=3):
 
     # final predicted curve
     with torch.no_grad():
-        E_final    = model(inp)
-        Fpred_full, _ = stiffness_calc(
-            EInd, nu, nuInd, R,
-            E_final[:,0], E_final[:,1], E_final[:,2],
-            Rworm, h1, h2, h3, δobs, stif
-        )
-    
-    # Create output folder with predicted moduli
-    Evals_int  = E_final.mean(dim=0).cpu().numpy().round().astype(int)
+        final_pred = model(inp)
+        final_phys = problem.forward_physics(inp, final_pred)
+
+    return model, history, inp, obs, final_pred, final_phys
+
+# 6) Main: run indentation as a PhysicsProblem----------------
+
+if __name__ == '__main__':
+    problem = IndentationPhysicsProblem()
+
+    # generic bounds (can be changed per physics problem)
+    bounds = [(30, 250), (300, 1200), (30, 300)]
+
+    model, history, inp, obs, predictions, physics_output = train(
+        problem=problem,
+        bounds=bounds,
+        data_path='data.csv',
+        patience=250,
+        tighten_epochs=1500,
+        stable_epochs=6
+    )
+
+    # Output & plots---------------------------
+    Evals_int = predictions.mean(dim=0).cpu().numpy().round().astype(int)
     output_dir = f"results_{Evals_int[0]}_{Evals_int[1]}_{Evals_int[2]}"
     os.makedirs(output_dir, exist_ok=True)
     print(f"Results will be saved to: {output_dir}/")
-    
-    # Save CSV with predictions
-    deltaex_np = δobs.squeeze(1).cpu().numpy()
-    Fpred_np   = Fpred_full.squeeze(1).cpu().numpy()
-    jobName = os.path.join(output_dir, f"Pred_{Evals_int[0]}_{Evals_int[1]}_{Evals_int[2]}.csv")
 
-    with open(jobName, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['deltaex', 'Fpred'])
-        for d,fp in zip(deltaex_np, Fpred_np):
-            writer.writerow([d, fp])
-    print(f"Saved predictions to {jobName}")
+    δobs = problem._δobs      # (N,1)
+    Fobs = problem._Fobs      # (N,1)
+    Fpred_full = physics_output  # (N,1)
 
-    # Save plots to output folder
-    plt.figure()
-    plt.plot(δobs, Fobs, 'bo', label='meas')
-    plt.plot(δobs, Fpred_full, 'r-', label='pred')
-    plt.xlabel("Indentation δ (m)")
-    plt.ylabel("Force F (N)")
-    plt.title("Measured vs Predicted Force–Indentation Curve")
-    plt.legend()
-    plt.savefig(os.path.join(output_dir, "force_indentation.png"), dpi=300)
-    plt.close()
+    # Save CSV and plots using visualization module
+    save_predictions_csv(Fpred_full, δobs, output_dir, Evals_int)
+    plot_force_indentation(δobs, Fobs, Fpred_full, output_dir)
+    plot_loss_curves(history, output_dir)
 
-    plt.figure()
-    plt.plot(history['total'], label='total')
-    plt.plot(history['data'], label='data')
-    plt.plot(history['order'], label='order')
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss value")
-    plt.title("Loss Curves")
-    plt.legend()
-    plt.savefig(os.path.join(output_dir, "loss_curves.png"), dpi=300)
-    plt.close()
-
-    return model
-
-if __name__ == '__main__':
-    
-    model = train(
-        path='data.csv',
-        patience=250,
-        tighten_epochs=1500,
-        E_min_max=[(30,250),(300,1200),(30,300)],
-        stable_epochs=6
-    )
+    print("Done.")
