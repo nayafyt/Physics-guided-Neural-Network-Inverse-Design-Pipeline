@@ -1,0 +1,15 @@
+services:
+  pgnn:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pgnn:latest
+
+    volumes:
+      - ./data:/app/data
+      - ./results:/app/results
+
+    command: ["python3", "main.py"]
+
+    stdin_open: true
+    tty: true

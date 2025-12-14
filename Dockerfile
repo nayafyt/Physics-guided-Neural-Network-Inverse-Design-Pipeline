@@ -8,4 +8,6 @@ RUN pip install --no-cache-dir torch==2.9.1 --extra-index-url https://download.p
 
 RUN pip install --no-cache-dir numpy pandas matplotlib scipy
 
-CMD ["python3", "main_new_1.py"]
+COPY . /app
+
+CMD ["python3", "main.py"]

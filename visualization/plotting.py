@@ -4,7 +4,6 @@ Handles CSV saving and plot generation for physics problems.
 """
 import os
 import csv
-import torch
 import matplotlib.pyplot as plt
 
 def save_predictions_csv(predictions, δobs, output_dir, Evals_int):
@@ -41,7 +40,10 @@ def plot_force_indentation(δobs, Fobs, Fpred_full, output_dir):
         output_dir: folder to save plot
     """
     os.makedirs(output_dir, exist_ok=True)
-    
+    print("δobs shape:", δobs.shape)
+    print("Fobs shape:", Fobs.shape)
+    print("Fpred_full shape:", Fpred_full.shape)
+
     plt.figure()
     plt.plot(δobs, Fobs, 'bo', label='meas')
     plt.plot(δobs, Fpred_full, 'r-', label='pred')
