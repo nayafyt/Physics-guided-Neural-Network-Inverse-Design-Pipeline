@@ -4,7 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile
     image: pgnn:latest
-
+    environment:
+      - OUTPUT_ROOT=/app/results
     volumes:
       - ./data:/app/data
       - ./results:/app/results

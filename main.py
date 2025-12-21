@@ -25,6 +25,9 @@ from physics.indentation import IndentationProblem
 # Import visualization utilities
 from visualization.plotting import save_predictions_csv, plot_force_indentation, plot_loss_curves
 
+# Set output root directory from environment variable or default
+OUTPUT_ROOT = os.environ.get("OUTPUT_ROOT", "results")
+
 # 1) DETERMINISM -------------------------------------------------- 
 SEED = 42
 random.seed(SEED)
@@ -193,7 +196,10 @@ if __name__ == '__main__':
 
     # Output & plots---------------------------
     Evals_int = predictions.mean(dim=0).cpu().numpy().round().astype(int)
-    output_dir = f"results_{Evals_int[0]}_{Evals_int[1]}_{Evals_int[2]}"
+    output_dir = os.path.join(
+        OUTPUT_ROOT,
+        f"results_{Evals_int[0]}_{Evals_int[1]}_{Evals_int[2]}"
+    )
     os.makedirs(output_dir, exist_ok=True)
     print(f"Results will be saved to: {output_dir}/")
 

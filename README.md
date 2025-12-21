@@ -33,7 +33,7 @@ This project provides a generic, extensible framework for physics-guided inverse
 │   └── plotting.py             # Plotting and CSV export utilities
 ├── data/
 │   └── data.csv                # Experimental data
-├── results_*/                  # Output directories with predictions
+├── results/                  # Output directory with predictions
 ├── Dockerfile, docker-compose.yml
 └── README.md
 ```
@@ -50,7 +50,7 @@ cd Physics-guided-Neural-Network-Inverse-Design-Pipeline
 ### Docker Setup
 
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
 
 ## Usage
@@ -64,7 +64,7 @@ python main.py
 The script will:
 1. Load experimental data from `data/data.csv`
 2. Train the physics-guided neural network
-3. Export predictions to `results_E1_E2_E3/` directory
+3. Export predictions to `results/` directory
 4. Generate force-indentation plots and loss curves
 
 ### Configuration
