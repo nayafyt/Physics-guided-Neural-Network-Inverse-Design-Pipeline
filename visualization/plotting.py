@@ -45,8 +45,9 @@ def plot_force_indentation(δobs, Fobs, Fpred_full, output_dir):
     print("Fpred_full shape:", Fpred_full.shape)
 
     plt.figure()
-    plt.plot(δobs, Fobs, 'bo', label='meas')
-    plt.plot(δobs, Fpred_full, 'r-', label='pred')
+    plt.plot(δobs, Fobs, 'bo', label='measured')
+    plt.plot(δobs, Fpred_full[:, 0], 'r-', label='predicted')
+    plt.plot(δobs, Fpred_full[:, 1:], 'r-', alpha=0.3)
     plt.xlabel("Indentation δ (m)")
     plt.ylabel("Force F (N)")
     plt.title("Measured vs Predicted Force–Indentation Curve")
