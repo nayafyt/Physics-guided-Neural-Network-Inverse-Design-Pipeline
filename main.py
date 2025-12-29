@@ -53,14 +53,12 @@ class PGNN(nn.Module):
     Generic Physics-Guided NN with configurable input/output dims and bounds.
     For indentation problem: input_dim=2, output_dim=3.
     """
-    def __init__(self, input_dim, output_dim, bounds):
+    def __init__(self, input_dim, output_dim, bounds,num_hidden_layers, hidden_dim):
         super().__init__()
-
-        hidden_dim = 72
-
+        
         layers = []
         prev = input_dim
-        for _ in range(3):  # 3 hidden layers of size 72
+        for _ in range(num_hidden_layers):  # 3 hidden layers of size 72
             layers.append(nn.Linear(prev, hidden_dim))
             layers.append(nn.BatchNorm1d(hidden_dim))
             layers.append(nn.Tanh())
@@ -108,6 +106,7 @@ def loss_fn(model, inp, obs, problem, wOrder=1.0):
     return total_loss, data_loss, constraint, predictions, physics_output
 
 def train(problem, bounds, data_path,
+          num_hidden_layers=3, hidden_dim=72,
           patience=250, tighten_epochs=1500, stable_epochs=6):
     """
     Generic training loop for any PhysicsProblem.
@@ -115,7 +114,7 @@ def train(problem, bounds, data_path,
     t0 = time.time()
 
     input_dim, output_dim = problem.get_input_output_dims()
-    model = PGNN(input_dim, output_dim, bounds)
+    model = PGNN(input_dim, output_dim, bounds, num_hidden_layers=num_hidden_layers, hidden_dim=hidden_dim)
     model.apply(init_weights)
     optimizer = optim.Adam(model.hidden.parameters(), lr=1e-3)
     scheduler = CosineAnnealingLR(optimizer, T_max=tighten_epochs, eta_min=1e-5)
@@ -189,6 +188,8 @@ if __name__ == '__main__':
         problem=problem,
         bounds=bounds,
         data_path='data/data.csv',
+        num_hidden_layers=3,
+        hidden_dim=72,
         patience=250,
         tighten_epochs=1500,
         stable_epochs=6
