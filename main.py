@@ -21,6 +21,7 @@ import math
 from scipy.optimize import curve_fit
 import os
 from physics.indentation import IndentationProblem
+from physics.vessel import VesselProblem
 
 # Import visualization utilities
 from visualization.plotting import save_predictions_csv, plot_force_indentation, plot_loss_curves
@@ -51,16 +52,25 @@ class CustomActivation(nn.Module):
 class PGNN(nn.Module):
     """
     Generic Physics-Guided NN with configurable input/output dims and bounds.
-    For indentation problem: input_dim=2, output_dim=3.
+    - For indentation (forward): input_dim=2, output_dim=3
+    - For inverse design: input_dim=0 → uses learnable latent parameters
     """
-    def __init__(self, input_dim, output_dim, bounds,num_hidden_layers, hidden_dim):
+    def __init__(self, input_dim, output_dim, bounds, num_hidden_layers, hidden_dim):
         super().__init__()
         
+        # For inverse design (input_dim=0), use learnable latent parameters
+        if input_dim == 0:
+            self.latent_params = nn.Parameter(torch.randn(1, 16) * 0.1)
+            actual_input_dim = 16
+        else:
+            self.latent_params = None
+            actual_input_dim = input_dim
+        
         layers = []
-        prev = input_dim
-        for _ in range(num_hidden_layers):  # 3 hidden layers of size 72
+        prev = actual_input_dim
+        for _ in range(num_hidden_layers):
             layers.append(nn.Linear(prev, hidden_dim))
-            layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.LayerNorm(hidden_dim))  # LayerNorm works with batch_size=1
             layers.append(nn.Tanh())
             prev = hidden_dim
         layers.append(nn.Linear(hidden_dim, output_dim))
@@ -72,7 +82,15 @@ class PGNN(nn.Module):
         ])
 
     def forward(self, x):
-        raw = self.hidden(x)
+        # If using latent parameters (inverse design), expand them
+        if self.latent_params is not None:
+            # Repeat latent params to match batch size
+            latent = self.latent_params.expand(x.shape[0], -1)
+            net_input = latent
+        else:
+            net_input = x
+        
+        raw = self.hidden(net_input)
         outputs = []
         for i in range(len(self.activations)):
             Ei = self.activations[i](raw[:, i].unsqueeze(1)).squeeze(1)
@@ -80,14 +98,14 @@ class PGNN(nn.Module):
         return torch.stack(outputs, dim=1)
 
 def init_weights(m):
-    """Xavier init for Linear, standard for BN."""
+    """Xavier init for Linear, standard for LayerNorm."""
     if isinstance(m, nn.Linear):
         gain = nn.init.calculate_gain('tanh')
         std = gain * math.sqrt(2.0/(m.weight.size(0)+m.weight.size(1)))
         nn.init.normal_(m.weight,0.,std)
         if m.bias is not None:
             nn.init.zeros_(m.bias)
-    elif isinstance(m, nn.BatchNorm1d):
+    elif isinstance(m, nn.LayerNorm):
         nn.init.ones_(m.weight)
         nn.init.zeros_(m.bias)
 
@@ -110,13 +128,22 @@ def train(problem, bounds, data_path,
           patience=250, tighten_epochs=1500, stable_epochs=6):
     """
     Generic training loop for any PhysicsProblem.
+    
+    For inverse design: trains latent parameters to minimize physics objective.
+    For forward mapping: trains to match observed data.
     """
     t0 = time.time()
 
     input_dim, output_dim = problem.get_input_output_dims()
     model = PGNN(input_dim, output_dim, bounds, num_hidden_layers=num_hidden_layers, hidden_dim=hidden_dim)
     model.apply(init_weights)
-    optimizer = optim.Adam(model.hidden.parameters(), lr=1e-3)
+    
+    # Optimize both hidden layer + latent params (if exists)
+    if hasattr(model, 'latent_params') and model.latent_params is not None:
+        optimizer = optim.Adam(list(model.hidden.parameters()) + [model.latent_params], lr=1e-3)
+    else:
+        optimizer = optim.Adam(model.hidden.parameters(), lr=1e-3)
+    
     scheduler = CosineAnnealingLR(optimizer, T_max=tighten_epochs, eta_min=1e-5)
 
     inp, obs = problem.load_data(data_path)
@@ -145,7 +172,6 @@ def train(problem, bounds, data_path,
             no_imp += 1
 
         # first-decimal stability early-stop
-        #On our run this got trigger first before no improvement condition
         pred_means = pred.mean(dim=0)
         rounded = torch.round(pred_means * 10) / 10 # first decimal
         if prev_rounded is not None and torch.all(rounded == prev_rounded):
@@ -155,20 +181,20 @@ def train(problem, bounds, data_path,
         prev_rounded = rounded
 
         # stopping conditions
-        if no_imp >= patience: #That (NO improvement condition) did not get trigger 
+        if no_imp >= patience:
             print(f"Early stop (no loss imp.) @ epoch {epoch}")
             break
         if stable_count >= stable_epochs:
-            print(f"Stopped: E stable at {rounded.tolist()} for {stable_epochs} epochs")
+            print(f"Stopped: design stable at {rounded.tolist()} for {stable_epochs} epochs")
             break
 
-        if epoch % 100 == 0: #It shows training progress every 100 epochs
+        if epoch % 100 == 0:
             lr = scheduler.get_last_lr()[0]
-            print(f"Epoch {epoch:4d} | Loss {total:.3e} | E {rounded.tolist()} | LR {lr:.1e}")
+            print(f"Epoch {epoch:4d} | Loss {total:.3e} | Design {rounded.tolist()} | LR {lr:.1e}")
 
     elapsed = time.time() - t0
     print(f"Optimization completed in {elapsed:.1f} s")
-    print(f"Epoch {epoch:4d} | Loss {total:.2e} | E {rounded.tolist()}")
+    print(f"Epoch {epoch:4d} | Loss {total:.2e} | Design {rounded.tolist()}")
 
     # final predicted curve
     with torch.no_grad():
@@ -179,15 +205,23 @@ def train(problem, bounds, data_path,
 
 # 6) Main: run indentation as a PhysicsProblem----------------
 if __name__ == '__main__':
-    problem = IndentationProblem()
+    # problem = IndentationProblem()
+    problem = VesselProblem()
 
-    # generic bounds (can be changed per physics problem)
-    bounds = [(30, 250), (300, 1200), (30, 300)]
+    # Design variable bounds (must match output_dim order from get_input_output_dims)
+    # VesselProblem outputs: [SAngle, Stepply, Nrplies, SymLam, Thickpl]
+    bounds = [
+        (0, 175),   # SAngle
+        (5, 55),    # Stepply
+        (8, 40),    # Nrplies
+        (0, 1),     # SymLam
+        (1, 2)      # Thickpl
+    ]
 
     model, history, inp, obs, predictions, physics_output = train(
         problem=problem,
         bounds=bounds,
-        data_path='data/data.csv',
+        data_path='data/pressure_vessel_DS.csv',
         num_hidden_layers=3,
         hidden_dim=72,
         patience=250,
@@ -204,13 +238,13 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True)
     print(f"Results will be saved to: {output_dir}/")
 
-    δobs = problem._δobs      # (N,1)
-    Fobs = problem._Fobs      # (N,1)
-    Fpred_full = physics_output  # (N,1)
+    # δobs = problem._δobs      # (N,1)
+    # Fobs = problem._Fobs      # (N,1)
+    # Fpred_full = physics_output  # (N,1)
 
     # Save CSV and plots using visualization module
-    save_predictions_csv(Fpred_full, δobs, output_dir, Evals_int)
-    plot_force_indentation(δobs, Fobs, Fpred_full, output_dir)
-    plot_loss_curves(history, output_dir)
+    # save_predictions_csv(Fpred_full, δobs, output_dir, Evals_int)
+    # plot_force_indentation(δobs, Fobs, Fpred_full, output_dir)
+    # plot_loss_curves(history, output_dir)
 
     print("Done.")
