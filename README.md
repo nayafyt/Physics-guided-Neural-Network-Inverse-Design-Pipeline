@@ -14,40 +14,6 @@ This integration creates a powerful synergy where neural networks learn from dat
 
 ## 🔬 General Methodology
 
-The PGNN framework follows a systematic workflow that can be applied to diverse physics domains:
-
-```mermaid
-graph TD
-    A[Physics Problem Definition] --> B[Data Collection & Preprocessing]
-    B --> C[Physics Model Formulation]
-    C --> D[Neural Network Architecture Design]
-    D --> E[Loss Function Design]
-    E --> F[Training with Physics Constraints]
-    F --> G[Solution Validation]
-    G --> H[Physical Interpretation]
-    
-    C --> C1[Forward Physics Model]
-    C --> C2[Constraint Functions]
-    C --> C3[Boundary Conditions]
-    
-    E --> E1[Data Fidelity Term]
-    E --> E2[Physics Constraint Term]
-    E --> E3[Regularization Terms]
-    
-    F --> F1[Gradient-Based Optimization]
-    F --> F2[Adaptive Learning Rate]
-    F --> F3[Early Stopping Criteria]
-```
-
-### Key Components
-
-1. **Physics Problem Abstraction**: A unified interface for defining physics problems through the `PhysicsProblem` base class
-2. **Adaptive Architecture**: Neural network designs that can be customized for different problem types
-3. **Constraint Integration**: Flexible mechanisms for incorporating various types of physical constraints
-4. **Optimization Strategy**: Deterministic training procedures with convergence guarantees
-
-## 🚀 Key Innovations
-
 ### 1. Physics-Constrained Learning
 - **Domain-Specific Constraints**: Enforces physical relationships through custom loss terms
 - **Differentiable Physics**: Implements physics models as differentiable functions for gradient-based optimization
@@ -106,31 +72,6 @@ This example demonstrates inverse design - finding optimal composite vessel desi
 - Manufacturing constraints (discrete ply angles, thicknesses)
 
 **Results**: Optimal design parameters selected from discrete design space using direct dataset lookup.
-
-## 🏗️ Framework Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    PGNN Framework                            │
-├─────────────────────────────────────────────────────────────┤
-│  Core Components                                           │
-│  ├── Neural Network Architecture                           │
-│  ├── Physics Constraint Engine                             │
-│  ├── Optimization Module                                   │
-│  └── Validation & Visualization                            │
-├─────────────────────────────────────────────────────────────┤
-│  Physics Problem Interface                                 │
-│  ├── PhysicsProblem (Abstract Base Class)                 │
-│  ├── Forward Model Implementation                          │
-│  ├── Constraint Functions                                 │
-│  └── Data Processing                                       │
-├─────────────────────────────────────────────────────────────┤
-│  Problem Implementations                                   │
-│  ├── IndentationProblem (Contact Mechanics)               │
-│  ├── VesselProblem (Composite Design)                      │
-│  └── YourProblem (Extensible)                             │
-└─────────────────────────────────────────────────────────────┘
-```
 
 ## 🛠️ Extensibility Guidelines
 
