@@ -11,9 +11,13 @@ import numpy as np
 class DiscreteRounder:
     """
     Rounds continuous predictions to nearest valid discrete values
-    based on dataset constraints.
+    based on design parameter constraints.
+    
+    This ensures the design variables take only valid discrete values
+    from the dataset design space.
     """
     
+    # Define valid discrete ranges for each design parameter
     DISCRETE_RANGES = {
         'SAngle': (0, 175, 5),      # min, max, step
         'Stepply': (5, 55, 5),
@@ -24,7 +28,16 @@ class DiscreteRounder:
     
     @staticmethod
     def round_to_nearest(value, param_name):
-        """Round value to nearest valid discrete value for parameter."""
+        """
+        Round a continuous value to nearest valid discrete value.
+        
+        Args:
+            value: Continuous prediction from PGNN
+            param_name: Name of design parameter
+            
+        Returns:
+            Rounded discrete value within valid bounds
+        """
         lo, hi, step = DiscreteRounder.DISCRETE_RANGES[param_name]
         # Round to nearest step
         rounded = round((value - lo) / step) * step + lo
@@ -40,7 +53,7 @@ class DiscreteRounder:
             design_array: numpy array [SAngle, Stepply, Nrplies, SymLam, Thickpl]
         
         Returns:
-            Discretized design as numpy array
+            Discretized design as numpy array with valid discrete values
         """
         param_names = ['SAngle', 'Stepply', 'Nrplies', 'SymLam', 'Thickpl']
         discrete = np.zeros_like(design_array)
@@ -51,10 +64,16 @@ class DiscreteRounder:
 
 class VesselProblem(PhysicsProblem):
     """
-    Inverse design problem: find optimal design variables that minimize min_val
-    by direct lookup in the dataset.
+    Inverse design problem for pressure vessel optimization.
     
-    No surrogate model—uses exact values from the CSV.
+    Find optimal design variables [SAngle, Stepply, Nrplies, SymLam, Thickpl]
+    that minimize the objective (min_val) by direct lookup in the dataset.
+    
+    Key differences from forward problems:
+    - No continuous physics model, only discrete dataset lookup
+    - Input is dummy (0) - optimization is inverse/generative
+    - Output is 5 design variables (not sensor responses)
+    - forward_physics performs dataset lookup for evaluation
     """
 
     def __init__(self):
@@ -62,6 +81,8 @@ class VesselProblem(PhysicsProblem):
         self._obs = None
         self.dataset_df = None
         self.design_params = ['SAngle', 'Stepply', 'Nrplies', 'SymLam', 'Thickpl']
+        self.best_design_found = None
+        self.best_objective_found = float('inf')
 
     # =========================================================
     # Required PhysicsProblem Interface
@@ -71,19 +92,30 @@ class VesselProblem(PhysicsProblem):
         """
         Returns (input_dim, output_dim) for PGNN.
         
-        For inverse design: 
-          - input_dim = 0 (uses latent parameters)
-          - output_dim = 5 (design variables)
+        For inverse design of vessel: 
+          - input_dim = 0 (uses latent parameters, no data input)
+          - output_dim = 5 (design variables: SAngle, Stepply, Nrplies, SymLam, Thickpl)
         """
         return 0, 5
+
+    def is_discrete(self):
+        """
+        Indicates that outputs are discrete design variables,
+        not continuous physical parameters.
+        """
+        return True
 
     def load_data(self, csv_path):
         """
         Load dataset for lookup-based inverse design.
         
+        For inverse design:
+          - inp: dummy input of 0 (no real input data needed)
+          - obs: target objective value (best/minimum from dataset)
+        
         Returns:
-            inp: dummy input [1, 1]
-            obs: target min_val (mean of dataset as optimization target)
+            inp: [1, 1] tensor with dummy value 0
+            obs: [1, 1] tensor with best objective value from dataset
         """
         df = pd.read_csv(csv_path)
         
@@ -91,43 +123,50 @@ class VesselProblem(PhysicsProblem):
         df.columns = df.columns.str.strip()
         df.columns = df.columns.str.replace('\ufeff', '', regex=False)
         
-        # Store dataset
+        # Store dataset for later lookup
         self.dataset_df = df
         
         # Get dataset statistics
         min_val_data = df["min_val"].values
-        min_val_mean = min_val_data.mean()
         min_val_min = min_val_data.min()
         min_val_max = min_val_data.max()
+        min_val_mean = min_val_data.mean()
+        
+        # Initialize best found
+        self.best_objective_found = min_val_min
         
         print(f"\n[VesselProblem] Loaded {len(df)} design points")
-        print(f"  Design space: {len(df)} unique combinations")
-        print(f"  min_val range: [{min_val_min:.6f}, {min_val_max:.6f}]")
-        print(f"  min_val mean:  {min_val_mean:.6f}")
-        print(f"  Best min_val:  {min_val_min:.6f}")
+        print(f"  Design space: {len(df)} unique parameter combinations")
+        print(f"  Objective (min_val) range: [{min_val_min:.6f}, {min_val_max:.6f}]")
+        print(f"  Objective mean: {min_val_mean:.6f}")
+        print(f"  Target (best objective): {min_val_min:.6f}")
         
         # For inverse design:
-        # - Input is dummy (no real input data)
-        # - Observation is the best (minimum) min_val from dataset
-        inp = torch.zeros(1, 1)
+        # - Input is dummy (0) - signals that we're optimizing, not predicting from data
+        # - Observation is the best objective value (target for minimization)
+        inp = torch.zeros(1, 1, dtype=torch.float32)
         obs = torch.tensor([[min_val_min]], dtype=torch.float32)
+        
+        self._inp = inp
+        self._obs = obs
         
         return inp, obs
 
     def lookup_min_val(self, design_dict):
         """
-        Lookup min_val from dataset for a specific design.
+        Lookup min_val (objective) from dataset for a specific design.
         
         Args:
             design_dict: dict with keys ['SAngle', 'Stepply', 'Nrplies', 'SymLam', 'Thickpl']
+                        with integer discrete values
         
         Returns:
-            min_val if found, None otherwise
+            min_val (float) if exact design found, None otherwise
         """
         if self.dataset_df is None:
             return None
         
-        # Build query conditions
+        # Build query mask for exact match
         mask = pd.Series([True] * len(self.dataset_df))
         for param, value in design_dict.items():
             mask &= (self.dataset_df[param] == value)
@@ -138,26 +177,53 @@ class VesselProblem(PhysicsProblem):
         else:
             return None
 
-    def forward_physics(self, inp, predictions):
+    def find_nearest_design(self, design_array):
         """
-        Physics model: lookup actual min_val from dataset.
+        Find nearest design in dataset using L2 distance.
+        Used when exact discretized design is not in dataset.
         
         Args:
-            inp: [batch_size, 1] dummy input
-            predictions: [batch_size, 5] continuous predictions
+            design_array: [5,] numpy array with discretized values
+            
+        Returns:
+            min_val from nearest design in dataset
+        """
+        if self.dataset_df is None:
+            return None
+        
+        dataset_designs = self.dataset_df[self.design_params].values
+        distances = np.linalg.norm(dataset_designs - design_array, axis=1)
+        nearest_idx = np.argmin(distances)
+        return self.dataset_df.iloc[nearest_idx]["min_val"]
+
+    def forward_physics(self, inp, predictions):
+        """
+        Physics evaluation for vessel inverse design: dataset lookup.
+        
+        Process:
+          1. Take continuous predictions from PGNN
+          2. Discretize to valid design parameter values
+          3. Look up objective (min_val) in dataset
+          4. Use nearest neighbor if exact design not found
+        
+        Args:
+            inp: [batch_size, 1] dummy input (not used, always 0)
+            predictions: [batch_size, 5] continuous design variable predictions
         
         Returns:
-            [batch_size, 1] min_val from dataset lookup (or nearest neighbor)
+            [batch_size, 1] objective values (min_val) from dataset
         """
         batch_size = predictions.shape[0]
         min_vals = []
         
         for i in range(batch_size):
-            # Discretize the prediction
+            # Get continuous prediction
             design_continuous = predictions[i].detach().cpu().numpy()
+            
+            # Discretize to valid design parameter values
             design_discrete = DiscreteRounder.discretize_design(design_continuous)
             
-            # Build design dict
+            # Build design dictionary for lookup
             design_dict = {
                 'SAngle': int(design_discrete[0]),
                 'Stepply': int(design_discrete[1]),
@@ -166,31 +232,35 @@ class VesselProblem(PhysicsProblem):
                 'Thickpl': int(design_discrete[4])
             }
             
-            # Lookup in dataset
+            # Try exact lookup in dataset
             min_val = self.lookup_min_val(design_dict)
             
-            # If exact match not found, use nearest neighbor
+            # If exact design not found, use nearest neighbor
             if min_val is None:
-                # Find nearest design in dataset (L2 distance on normalized features)
-                dataset_designs = self.dataset_df[self.design_params].values
-                distances = np.linalg.norm(dataset_designs - design_discrete, axis=1)
-                nearest_idx = np.argmin(distances)
-                min_val = self.dataset_df.iloc[nearest_idx]["min_val"]
+                min_val = self.find_nearest_design(design_discrete)
             
-            min_vals.append(float(min_val))
+            # Track best design found during training
+            if min_val is not None and min_val < self.best_objective_found:
+                self.best_objective_found = min_val
+                self.best_design_found = design_dict.copy()
+            
+            min_vals.append(float(min_val) if min_val is not None else float('inf'))
         
-        # Return as tensor
+        # Return as [batch_size, 1] tensor
         return torch.tensor(min_vals, dtype=torch.float32).unsqueeze(1)
 
     def constraint_loss(self, predictions):
         """
-        Soft constraints to keep predictions within valid bounds.
+        Soft constraint penalty to keep predictions within valid bounds.
+        
+        Encourages PGNN to stay within the discrete parameter ranges,
+        reducing the number of out-of-bounds lookups.
         
         Args:
-            predictions: [batch_size, 5] design variables
+            predictions: [batch_size, 5] continuous design variables
         
         Returns:
-            Scalar penalty for out-of-bounds predictions
+            Scalar penalty for out-of-bounds violations
         """
         penalty = 0.0
         
@@ -203,8 +273,20 @@ class VesselProblem(PhysicsProblem):
         ]
         
         for i, (lo, hi) in enumerate(bounds):
+            # Penalize predictions below or above bounds
             below = torch.relu(lo - predictions[:, i])
             above = torch.relu(predictions[:, i] - hi)
             penalty += torch.mean(below**2 + above**2)
         
         return penalty
+
+    def get_best_design(self):
+        """
+        Return best design found during training.
+        
+        Returns:
+            dict with keys ['SAngle', 'Stepply', 'Nrplies', 'SymLam', 'Thickpl']
+            or None if no valid design found
+        """
+        return self.best_design_found
+
