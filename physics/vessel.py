@@ -72,7 +72,7 @@ class VesselProblem(PhysicsProblem):
     Key differences from forward problems:
     - No continuous physics model, only discrete dataset lookup
     - Input is dummy (0) - optimization is inverse/generative
-    - Output is 5 design variables (not sensor responses)
+    - Output is 5 design variables 
     - forward_physics performs dataset lookup for evaluation
     """
 
@@ -83,10 +83,6 @@ class VesselProblem(PhysicsProblem):
         self.design_params = ['SAngle', 'Stepply', 'Nrplies', 'SymLam', 'Thickpl']
         self.best_design_found = None
         self.best_objective_found = float('inf')
-
-    # =========================================================
-    # Required PhysicsProblem Interface
-    # =========================================================
 
     def get_input_output_dims(self):
         """
