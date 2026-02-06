@@ -31,7 +31,6 @@ class IndentationProblem(PhysicsProblem):
         ind = df['ind'].values * 1e-3
         force = df['force'].values * 1e-3
 
-        # IMPORTANT: call self.func, not func
         popt, _ = curve_fit(self.func, ind, force)
         self.stif_fit = popt
 

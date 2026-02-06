@@ -7,6 +7,7 @@ class PhysicsProblem:
     - load_data()
     - forward_physics()
     - constraint_loss() [optional]
+    - is_discrete() [optional]
     """
     
     def get_input_output_dims(self):
