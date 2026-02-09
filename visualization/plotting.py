@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 def save_predictions_csv(predictions, δobs, output_dir, Evals_int):
     """
-    Export predictions to CSV file.
+    Export indentation predictions to CSV file.
     
     Args:
         predictions: [N, output_dim] physics model outputs
@@ -28,6 +28,56 @@ def save_predictions_csv(predictions, δobs, output_dir, Evals_int):
         for d, fp in zip(deltaex_np, Fpred_np):
             writer.writerow([d, fp])
     print(f"Saved predictions to {jobName}")
+
+def save_vessel_design_csv(predictions, physics_output, output_dir, design_int):
+    """
+    Export vessel design optimization results to CSV file.
+    Mirrors the indentation format: design variables + physics output (min_val).
+    
+    Args:
+        predictions: [batch_size, 5] continuous design predictions from PGNN
+                     [SAngle, Stepply, Nrplies, SymLam, Thickpl]
+        physics_output: [batch_size, 1] corresponding min_val objectives from forward_physics
+        output_dir: folder to save CSV
+        design_int: [5] rounded predicted design variables for filename
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    pred_np = predictions.cpu().numpy() if predictions.dim() > 1 else predictions.cpu().numpy()
+    phys_np = physics_output.squeeze(1).cpu().numpy() if physics_output.dim() > 1 else physics_output.cpu().numpy()
+    
+    jobName = os.path.join(output_dir, f"optimal_design.csv")
+    
+    with open(jobName, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['SAngle', 'Stepply', 'Nrplies', 'SymLam', 'Thickpl', 'min_val'])
+        for pred, mv in zip(pred_np, phys_np):
+            writer.writerow([pred[0], pred[1], pred[2], pred[3], pred[4], mv])
+    print(f"Saved vessel design to {jobName}")
+
+def save_vessel_epoch_results_csv(epoch_results, output_dir):
+    """
+    Export vessel design results for each epoch to CSV file.
+    Shows how the design evolved throughout training.
+    
+    Args:
+        epoch_results: List of dicts, each containing:
+                      {'epoch': int, 'predictions': [5], 'physics_output': [1]}
+        output_dir: folder to save CSV
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    jobName = os.path.join(output_dir, "epoch_results.csv")
+    
+    with open(jobName, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Epoch', 'SAngle', 'Stepply', 'Nrplies', 'SymLam', 'Thickpl', 'min_val'])
+        for result in epoch_results:
+            epoch = result['epoch']
+            pred = result['predictions'][0]  # batch_size=1, get first (only) element
+            phys = result['physics_output'][0, 0]  # batch_size=1, get scalar
+            writer.writerow([epoch, pred[0], pred[1], pred[2], pred[3], pred[4], phys])
+    print(f"Saved epoch results to {jobName}")
 
 def plot_force_indentation(δobs, Fobs, Fpred_full, output_dir):
     """

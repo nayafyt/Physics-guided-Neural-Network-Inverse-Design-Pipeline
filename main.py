@@ -24,7 +24,7 @@ from physics.indentation import IndentationProblem
 from physics.vessel import VesselProblem
 
 # Import visualization utilities
-from visualization.plotting import save_predictions_csv, plot_force_indentation, plot_loss_curves
+from visualization.plotting import save_predictions_csv, save_vessel_design_csv, save_vessel_epoch_results_csv, plot_force_indentation, plot_loss_curves
 
 # Set output root directory from environment variable or default
 OUTPUT_ROOT = os.environ.get("OUTPUT_ROOT", "results")
@@ -165,10 +165,12 @@ def train(problem, bounds, data_path,
 
     inp, obs = problem.load_data(data_path)
     history = {'total': [], 'data': [], 'constraint': []}
+    epoch_results = []  # Store predictions and physics outputs for each epoch
     best_loss = float('inf')
     no_imp = 0
     stable_count = 0
     prev_rounded = None
+    last_saved_pred = None  # Track last saved prediction
 
     for epoch in range(1, 10001):
         optimizer.zero_grad()
@@ -181,6 +183,26 @@ def train(problem, bounds, data_path,
         history['total'].append(total.item())
         history['data'].append(dL.item())
         history['constraint'].append(oL.item())
+        
+        # Store epoch results for vessel problem - save if predictions changed or every 10 epochs
+        if isinstance(problem, VesselProblem):
+            pred_np = pred.detach().cpu().numpy().copy()
+            phys_np = phys.detach().cpu().numpy().copy()
+            
+            # Check if predictions have changed significantly or if it's a milestone epoch
+            save_this_epoch = (epoch % 10 == 0)  # Save every 10 epochs
+            if last_saved_pred is not None:
+                pred_diff = np.abs(pred_np - last_saved_pred).max()
+                if pred_diff > 0.01:  # Save if change > 0.01
+                    save_this_epoch = True
+            
+            if save_this_epoch or epoch == 1:  # Always save epoch 1
+                epoch_results.append({
+                    'epoch': epoch,
+                    'predictions': pred_np,
+                    'physics_output': phys_np
+                })
+                last_saved_pred = pred_np
 
         # check improvement
         if total.item() < best_loss:
@@ -219,7 +241,11 @@ def train(problem, bounds, data_path,
         final_pred = model(inp)
         final_phys = problem.forward_physics(inp, final_pred)
 
-    return model, history, inp, obs, final_pred, final_phys
+    # Return epoch_results only for vessel problem
+    if isinstance(problem, VesselProblem):
+        return model, history, inp, obs, final_pred, final_phys, epoch_results
+    else:
+        return model, history, inp, obs, final_pred, final_phys
 
 # 6) Main: run indentation or vessel problem----------
 if __name__ == '__main__':
@@ -243,7 +269,7 @@ if __name__ == '__main__':
     num_hidden_layers = 3      # ← Change this (e.g., 2, 3, 4, 5, ...)
     hidden_dim = 72            # ← Change this (e.g., 32, 64, 72, 128, ...)
 
-    model, history, inp, obs, predictions, physics_output = train(
+    result = train(
         problem=problem,
         bounds=bounds,
         data_path=data_path,
@@ -251,8 +277,15 @@ if __name__ == '__main__':
         hidden_dim=hidden_dim,                # Pass to train
         patience=250,
         tighten_epochs=1500,
-        stable_epochs=6
+        stable_epochs=50
     )
+    
+    # Unpack result based on problem type
+    if isinstance(problem, VesselProblem):
+        model, history, inp, obs, predictions, physics_output, epoch_results = result
+    else:
+        model, history, inp, obs, predictions, physics_output = result
+        epoch_results = None
 
     # Output & plots---------------------------
     Evals_int = predictions.mean(dim=0).cpu().numpy().round().astype(int)
@@ -290,7 +323,10 @@ if __name__ == '__main__':
         plot_force_indentation(δobs, Fobs, Fpred_full, output_dir)
         plot_loss_curves(history, output_dir)
     else:
-        # For Vessel problem, just save loss curves
+        # For Vessel problem, save design optimization results and loss curves
+        save_vessel_design_csv(predictions, physics_output, output_dir, Evals_int)
+        if epoch_results is not None:
+            save_vessel_epoch_results_csv(epoch_results, output_dir)
         plot_loss_curves(history, output_dir)
 
     print("Done.")
