@@ -52,10 +52,10 @@ class PGNN(nn.Module):
     """
     Generic Physics-Guided NN with configurable input/output dims and bounds.
     - For indentation (forward): input_dim=2, output_dim=3
-    - For inverse design: input_dim=0 → uses learnable latent parameters
+    - For inverse design: input_dim=1, output_dim=5 (maps target objective → design params)
     
     Args:
-        input_dim (int): Input dimension (0 for inverse design)
+        input_dim (int): Input dimension
         output_dim (int): Output dimension (number of parameters to predict)
         bounds (list): List of (min, max) tuples for each output
         num_hidden_layers (int): Number of hidden layers (default: 3)
@@ -64,23 +64,18 @@ class PGNN(nn.Module):
     def __init__(self, input_dim, output_dim, bounds, num_hidden_layers=3, hidden_dim=72):
         super().__init__()
 
-        # For inverse design (input_dim=0), use learnable latent parameters
-        if input_dim == 0:
-            self.latent_params = nn.Parameter(torch.randn(1, 16) * 0.1)
-            actual_input_dim = 16
-        else:
-            self.latent_params = None
-            actual_input_dim = input_dim
+        # Use LayerNorm for batch_size=1 (inverse design: input_dim=1)
+        # Use BatchNorm for batch_size>1 (forward design: input_dim>1)
+        use_layer_norm = (input_dim == 1)
 
         layers = []
-        prev = actual_input_dim
-        for _ in range(num_hidden_layers):  # Configurable number of hidden layers
+        prev = input_dim
+        for _ in range(num_hidden_layers):
             layers.append(nn.Linear(prev, hidden_dim))
-            # Use LayerNorm for inverse design (batch_size=1), BatchNorm for forward (batch_size>1)
-            if input_dim == 0:
-                layers.append(nn.LayerNorm(hidden_dim))  # Inverse design with latent params
+            if use_layer_norm:
+                layers.append(nn.LayerNorm(hidden_dim))
             else:
-                layers.append(nn.BatchNorm1d(hidden_dim))  # Forward design with input data
+                layers.append(nn.BatchNorm1d(hidden_dim))
             layers.append(nn.Tanh())
             prev = hidden_dim
         layers.append(nn.Linear(hidden_dim, output_dim))
@@ -92,15 +87,7 @@ class PGNN(nn.Module):
         ])
 
     def forward(self, x):
-        # If using latent parameters (inverse design), expand them
-        if self.latent_params is not None:
-            # Repeat latent params to match batch size
-            latent = self.latent_params.expand(x.shape[0], -1)
-            net_input = latent
-        else:
-            net_input = x
-        
-        raw = self.hidden(net_input)
+        raw = self.hidden(x)
         outputs = []
         for i in range(len(self.activations)):
             Ei = self.activations[i](raw[:, i].unsqueeze(1)).squeeze(1)
@@ -155,11 +142,7 @@ def train(problem, bounds, data_path,
     model = PGNN(input_dim, output_dim, bounds, num_hidden_layers=num_hidden_layers, hidden_dim=hidden_dim)
     model.apply(init_weights)
     
-    # Optimize both hidden layer + latent params (if exists)
-    if hasattr(model, 'latent_params') and model.latent_params is not None:
-        optimizer = optim.Adam(list(model.hidden.parameters()) + [model.latent_params], lr=1e-3)
-    else:
-        optimizer = optim.Adam(model.hidden.parameters(), lr=1e-3)
+    optimizer = optim.Adam(model.hidden.parameters(), lr=1e-3)
     
     scheduler = CosineAnnealingLR(optimizer, T_max=tighten_epochs, eta_min=1e-5)
 
@@ -258,8 +241,8 @@ if __name__ == '__main__':
     if isinstance(problem, IndentationProblem):
         bounds = [(30, 250), (300, 1200), (30, 300)]
     else:
-        # For Vessel: [SAngle, Stepply, Nrplies, SymLam, Thickpl]
-        bounds = [(0, 175), (5, 55), (8, 40), (0, 1), (1, 2)]
+        # For Vessel: [SAngle, Nrplies, Stepply, SymLam, Thickpl]
+        bounds = [(0, 175), (8, 40), (5, 55), (0, 1), (1, 2)]
 
     # Adjust data path based on problem type
     data_path = 'data/data.csv' if isinstance(problem, IndentationProblem) else 'data/pressure_vessel_DS.csv'
@@ -299,7 +282,7 @@ if __name__ == '__main__':
     else:
         output_dir = os.path.join(
             OUTPUT_ROOT,
-            f"vessel_opt_{Evals_int[0]}_{Evals_int[1]}_{Evals_int[2]}"
+            f"vessel_opt_{Evals_int[0]}_{Evals_int[1]}_{Evals_int[2]}_{Evals_int[3]}_{Evals_int[4]}"
         )
     
     os.makedirs(output_dir, exist_ok=True)
@@ -324,7 +307,6 @@ if __name__ == '__main__':
         plot_loss_curves(history, output_dir)
     else:
         # For Vessel problem, save design optimization results and loss curves
-        save_vessel_design_csv(predictions, physics_output, output_dir, Evals_int)
         if epoch_results is not None:
             save_vessel_epoch_results_csv(epoch_results, output_dir)
         plot_loss_curves(history, output_dir)
