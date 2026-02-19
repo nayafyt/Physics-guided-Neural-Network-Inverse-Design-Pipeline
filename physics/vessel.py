@@ -24,8 +24,14 @@ class VesselProblem(PhysicsProblem):
 
         
         self.X = None  # [N, 5] design tensor
-        self.y = None  # [N] objective values
+        self.y_min_val = None  # [N] min_val objectives
+        self.y_S11 = None  # [N] S11 values
+        self.y_S22 = None  # [N] S22 values
+        self.y_Thick = None  # [N] Thick values
         self.min_val_min = None
+        self.S11_min = None
+        self.S22_min = None
+        self.Thick_min = None
         self.steps = None  # Step size for each parameter (for rounding)
 
         self.best_design_found = None
@@ -44,14 +50,22 @@ class VesselProblem(PhysicsProblem):
 
         X = torch.tensor(df[self.design_params].values, dtype=torch.float32)
         min_val = torch.tensor(df["min_val"].values, dtype=torch.float32)
+        S11 = torch.tensor(df["S11"].values, dtype=torch.float32)
+        S22 = torch.tensor(df["S22"].values, dtype=torch.float32)
+        Thick = torch.tensor(df["Thick"].values, dtype=torch.float32)
 
+        # Normalize each objective to start from 0 (best case)
         self.min_val_min = min_val.min().item()
-        y = min_val - self.min_val_min  # Shift: best design has objective = 0
+        self.S11_min = S11.min().item()
+        self.S22_min = S22.min().item()
+        self.Thick_min = Thick.min().item()
+        
+        self.y_min_val = min_val - self.min_val_min
+        self.y_S11 = S11 - self.S11_min
+        self.y_S22 = S22 - self.S22_min
+        self.y_Thick = Thick - self.Thick_min
 
         self.X = X
-        self.y = y
-
-        # Compute step size for each parameter (minimum difference between unique values)
         self.steps = []
         for i, param in enumerate(self.design_params):
             unique_vals = sorted(df[param].unique())
@@ -68,19 +82,23 @@ class VesselProblem(PhysicsProblem):
 
         print(f"\n[VesselProblem] Loaded dataset:")
         print(f"  Size: {len(df)}")
-        print(f"  Best objective (original): {self.min_val_min:.6f}")
+        print(f"  Best min_val (original): {self.min_val_min:.6f}")
+        print(f"  Best S11 (original): {self.S11_min:.6f}")
+        print(f"  Best S22 (original): {self.S22_min:.6f}")
+        print(f"  Best Thick (original): {self.Thick_min:.6f}")
         print(f"  Best design: {self.best_design_found}")
         print(f"  Parameter steps: {dict(zip(self.design_params, self.steps))}")
 
         inp = torch.zeros(1, 1)  # Dummy input
-        obs = torch.zeros(1, 1)  # Target: objective = 0
+        obs = torch.zeros(1, 4)  # Target: all objectives = 0 [min_val, S11, S22, Thick]
         self._inp = inp
         self._obs = obs
         return inp, obs
 
     def forward_physics(self, inp, predictions):
         """
-        Soft nearest-neighbor lookup using softmax over distances.
+        Soft nearest-neighbor lookup for [min_val, S11, S22, Thick].
+        Returns predictions for all four objectives to enable multi-objective optimization.
         This is differentiable - gradients flow back to predictions.
         """
         # Normalize both for fair distance computation
@@ -98,22 +116,31 @@ class VesselProblem(PhysicsProblem):
         # Soft nearest-neighbor: weighted average
         alpha = 10.0  # Higher alpha -> closer to hard nearest neighbor
         weights = torch.softmax(-alpha * dist, dim=1)  # [B,N]
-        y_pred = torch.sum(weights * self.y.unsqueeze(0), dim=1)  # [B]
+        
+        # Predict all four objectives
+        y_min_val_pred = torch.sum(weights * self.y_min_val.unsqueeze(0), dim=1)
+        y_S11_pred = torch.sum(weights * self.y_S11.unsqueeze(0), dim=1)
+        y_S22_pred = torch.sum(weights * self.y_S22.unsqueeze(0), dim=1)
+        y_Thick_pred = torch.sum(weights * self.y_Thick.unsqueeze(0), dim=1)
 
         # Track best solution found (with rounding for reporting)
-        # Find which dataset point each prediction is closest to
         nearest_idx = torch.argmin(dist, dim=1)
-        pred_rounded = self.X[nearest_idx]  # Get actual design from dataset
+        pred_rounded = self.X[nearest_idx]
         
-        min_val = y_pred.min().item()
+        min_val = y_min_val_pred.min().item()
         if min_val < self.best_objective_found:
-            idx = torch.argmin(y_pred).item()
+            idx = torch.argmin(y_min_val_pred).item()
             self.best_objective_found = min_val
             self.best_design_found = dict(
                 zip(self.design_params, pred_rounded[idx].detach().tolist())
             )
 
-        return y_pred.unsqueeze(1)
+        # Stack all four objectives for multi-objective optimization
+        predictions_stacked = torch.stack([
+            y_min_val_pred, y_S11_pred, y_S22_pred, y_Thick_pred
+        ], dim=1)  # [B, 4]
+
+        return predictions_stacked
 
     def constraint_loss(self, predictions):
         """Penalty if designs go outside valid bounds."""
