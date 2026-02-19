@@ -4,9 +4,9 @@ RUN apt-get update && apt-get install -y build-essential python3-dev && rm -rf /
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir torch==2.9.1 --extra-index-url https://download.pytorch.org/whl/cpu
+COPY requirements.txt /app/
 
-RUN pip install --no-cache-dir numpy pandas matplotlib scipy
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . /app
 
