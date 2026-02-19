@@ -142,9 +142,7 @@ def train(problem, bounds, data_path,
     model = PGNN(input_dim, output_dim, bounds, num_hidden_layers=num_hidden_layers, hidden_dim=hidden_dim)
     model.apply(init_weights)
     
-    optimizer = optim.Adam(model.hidden.parameters(), lr=1e-3)
-    
-    scheduler = CosineAnnealingLR(optimizer, T_max=tighten_epochs, eta_min=1e-5)
+    optimizer = optim.LBFGS(model.hidden.parameters(), lr=1e-3, max_iter=20, line_search_fn='strong_wolfe')
 
     inp, obs = problem.load_data(data_path)
     history = {'total': [], 'data': [], 'constraint': []}
@@ -156,12 +154,18 @@ def train(problem, bounds, data_path,
     last_saved_pred = None  # Track last saved prediction
 
     for epoch in range(1, 10001):
-        optimizer.zero_grad()
-        total, dL, oL, pred, phys = loss_fn(model, inp, obs, problem, wOrder=1.0)
-        total.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        scheduler.step()
+        def closure():
+            optimizer.zero_grad()
+            total, dL, oL, pred, phys = loss_fn(model, inp, obs, problem, wOrder=1.0)
+            total.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            return total
+        
+        total_loss = optimizer.step(closure)
+        
+        # Re-compute for logging
+        with torch.no_grad():
+            total, dL, oL, pred, phys = loss_fn(model, inp, obs, problem, wOrder=1.0)
 
         history['total'].append(total.item())
         history['data'].append(dL.item())
@@ -212,8 +216,7 @@ def train(problem, bounds, data_path,
             break
 
         if epoch % 100 == 0: #It shows training progress every 100 epochs
-            lr = scheduler.get_last_lr()[0]
-            print(f"Epoch {epoch:4d} | Loss {total:.3e} | E {rounded.tolist()} | LR {lr:.1e}")
+            print(f"Epoch {epoch:4d} | Loss {total:.3e} | E {rounded.tolist()}")
 
     elapsed = time.time() - t0
     print(f"Optimization completed in {elapsed:.1f} s")
