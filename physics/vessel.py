@@ -96,7 +96,8 @@ class VesselProblem(PhysicsProblem):
         dist = torch.norm(diff, dim=2)  # [B, N]
 
         # Soft nearest-neighbor: weighted average
-        weights = torch.softmax(-dist, dim=1)  # [B, N]
+        alpha = 10.0  # Higher alpha -> closer to hard nearest neighbor
+        weights = torch.softmax(-alpha * dist, dim=1)  # [B,N]
         y_pred = torch.sum(weights * self.y.unsqueeze(0), dim=1)  # [B]
 
         # Track best solution found (with rounding for reporting)

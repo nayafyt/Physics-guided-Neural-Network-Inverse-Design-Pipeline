@@ -4,6 +4,8 @@ Handles CSV saving and plot generation for physics problems.
 """
 import os
 import csv
+import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 
 def save_predictions_csv(predictions, δobs, output_dir, Evals_int):
@@ -36,7 +38,7 @@ def save_vessel_design_csv(predictions, physics_output, output_dir, design_int):
     
     Args:
         predictions: [batch_size, 5] continuous design predictions from PGNN
-                     [SAngle, Stepply, Nrplies, SymLam, Thickpl]
+                     [SAngle, Nrplies, Stepply, SymLam, Thickpl]
         physics_output: [batch_size, 1] corresponding min_val objectives from forward_physics
         output_dir: folder to save CSV
         design_int: [5] rounded predicted design variables for filename
@@ -50,7 +52,7 @@ def save_vessel_design_csv(predictions, physics_output, output_dir, design_int):
     
     with open(jobName, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['SAngle', 'Stepply', 'Nrplies', 'SymLam', 'Thickpl', 'min_val'])
+        writer.writerow(['SAngle', 'Nrplies', 'Stepply','SymLam', 'Thickpl', 'min_val'])
         for pred, mv in zip(pred_np, phys_np):
             writer.writerow([pred[0], pred[1], pred[2], pred[3], pred[4], mv])
     print(f"Saved vessel design to {jobName}")
@@ -71,7 +73,7 @@ def save_vessel_epoch_results_csv(epoch_results, output_dir):
     
     with open(jobName, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['Epoch', 'SAngle', 'Stepply', 'Nrplies', 'SymLam', 'Thickpl', 'min_val'])
+        writer.writerow(['Epoch', 'SAngle', 'Nrplies', 'Stepply', 'SymLam', 'Thickpl', 'min_val'])
         for result in epoch_results:
             epoch = result['epoch']
             pred = result['predictions'][0]  # batch_size=1, get first (only) element
@@ -125,3 +127,60 @@ def plot_loss_curves(history, output_dir):
     plt.legend()
     plt.savefig(os.path.join(output_dir, "loss_curves.png"), dpi=300)
     plt.close()
+
+def evaluate_rank(epoch_results_path, dataset_path):
+
+    epoch_df = pd.read_csv(epoch_results_path)
+    vessel_df = pd.read_csv(dataset_path)
+
+    vessel_df.columns = vessel_df.columns.str.strip()
+
+    design_cols = ['SAngle', 'Nrplies', 'Stepply', 'SymLam', 'Thickpl']
+
+
+    last_row = epoch_df.iloc[-1]
+
+    predicted = np.array([
+        last_row['SAngle'],
+        last_row['Nrplies'],   
+        last_row['Stepply'],
+        last_row['SymLam'],
+        last_row['Thickpl']
+    ])
+
+    print("\nPredicted design from last epoch:")
+    print(predicted)
+
+    X = vessel_df[design_cols].values
+    y = vessel_df["min_val"].values
+
+    dists = np.linalg.norm(X - predicted, axis=1)
+    nearest_idx = np.argmin(dists)
+
+    nearest_design = X[nearest_idx]
+    nearest_objective = y[nearest_idx]
+
+    global_best_idx = np.argmin(y)
+    global_best_design = X[global_best_idx]
+    global_best_objective = y[global_best_idx]
+
+    sorted_indices = np.argsort(y)
+    rank = np.where(sorted_indices == nearest_idx)[0][0] + 1
+
+    print("\nNearest dataset design:")
+    print(nearest_design)
+
+    print(f"\nNearest objective (real min_val): {nearest_objective:.6f}")
+    print(f"Global best objective: {global_best_objective:.6f}")
+    print(f"Rank in dataset: {rank} / {len(vessel_df)}")
+
+    print(f"\nDistance to nearest dataset design: {dists[nearest_idx]:.6f}")
+    print(f"Distance to global best design: {np.linalg.norm(global_best_design - predicted):.6f}")
+
+    print("\n====================================\n")
+
+    return {
+        "nearest_objective": nearest_objective,
+        "global_best_objective": global_best_objective,
+        "rank": rank
+    }

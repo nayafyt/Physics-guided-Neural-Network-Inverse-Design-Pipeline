@@ -24,7 +24,7 @@ from physics.indentation import IndentationProblem
 from physics.vessel import VesselProblem
 
 # Import visualization utilities
-from visualization.plotting import save_predictions_csv, save_vessel_design_csv, save_vessel_epoch_results_csv, plot_force_indentation, plot_loss_curves
+from visualization.plotting import save_predictions_csv, save_vessel_design_csv, save_vessel_epoch_results_csv, plot_force_indentation, plot_loss_curves, evaluate_rank
 
 # Set output root directory from environment variable or default
 OUTPUT_ROOT = os.environ.get("OUTPUT_ROOT", "results")
@@ -121,8 +121,8 @@ def loss_fn(model, inp, obs, problem, wOrder=1.0):
     return total_loss, data_loss, constraint, predictions, physics_output
 
 def train(problem, bounds, data_path,
-          num_hidden_layers=3, hidden_dim=72,
-          patience=250, tighten_epochs=1500, stable_epochs=6):
+          num_hidden_layers=4, hidden_dim=72,
+          patience=250, tighten_epochs=1500, stable_epochs=500):
     """
     Generic training loop for any PhysicsProblem.
     
@@ -256,11 +256,11 @@ if __name__ == '__main__':
         problem=problem,
         bounds=bounds,
         data_path=data_path,
-        num_hidden_layers=num_hidden_layers,  # Pass to train
+        num_hidden_layers=4,  # Pass to train
         hidden_dim=hidden_dim,                # Pass to train
-        patience=250,
+        patience=500,
         tighten_epochs=1500,
-        stable_epochs=50
+        stable_epochs=500
     )
     
     # Unpack result based on problem type
@@ -310,5 +310,6 @@ if __name__ == '__main__':
         if epoch_results is not None:
             save_vessel_epoch_results_csv(epoch_results, output_dir)
         plot_loss_curves(history, output_dir)
+        evaluate_rank(epoch_results_path=os.path.join(output_dir, "epoch_results.csv"), dataset_path=data_path)
 
     print("Done.")
