@@ -43,9 +43,6 @@ class VesselProblem(PhysicsProblem):
         """Returns path to vessel optimization data"""
         return 'data/pressure_vessel_DS.csv'
 
-    def is_discrete(self):
-        return True
-
     def load_data(self, csv_path):
         df = pd.read_csv(csv_path)
         df.columns = df.columns.str.strip()

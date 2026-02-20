@@ -144,6 +144,8 @@ def train(problem, bounds, data_path,
     
     optimizer = optim.Adam(model.hidden.parameters(), lr=1e-3)
     scheduler = CosineAnnealingLR(optimizer, T_max=tighten_epochs, eta_min=1e-5)
+    # eta_min controls the minimum learning rate: higher = warmer end (more exploration), 
+    # lower = colder end (more refinement). Try 1e-4 or 1e-6 to adjust late-stage optimization.
 
     inp, obs = problem.load_data(data_path)
     history = {'total': [], 'data': [], 'constraint': []}
@@ -236,26 +238,41 @@ def train(problem, bounds, data_path,
 
 # 6) Main: run indentation or vessel problem----------
 if __name__ == '__main__':
-    # Select problem: IndentationProblem (default) or VesselProblem
-    problem = IndentationProblem()
-    # problem = VesselProblem()  # ← Uncomment to switch to vessel inverse design
+    # SELECT YOUR PHYSICS PROBLEM
+    # Uncomment ONE of the following:
+    # problem = IndentationProblem()          # Inverse indentation problem (default)
+    problem = VesselProblem()              # Pressure vessel optimization
+    # problem = YourProblem()                # Your custom physics problem
 
-    # Get bounds dynamically from the problem
+    # Get bounds and data path dynamically from the problem
     bounds = problem.get_bounds()
-    
-    # Get data path dynamically from the problem
     data_path = problem.get_data_path()
     
-    # ========= PGNN Architecture Configuration =========
+    # NEURAL NETWORK ARCHITECTURE - TUNE THESE FOR YOUR PROBLEM
+    num_hidden_layers = 3      # ← Try: 2, 3, 4, 5 (more layers = more capacity)
+    hidden_dim = 72            # ← Try: 32, 64, 72, 128 (wider = more expressive)
+
+    # TRAINING HYPERPARAMETERS - ADJUST TO CONTROL OPTIMIZATION
+    patience = 250             # ← Early stopping: stop if loss doesn't improve for N epochs
+    tighten_epochs = 1500      # ← Maximum training epochs (upper bound on total epochs)
+    stable_epochs = 6          # ← Stop if predictions stable for N consecutive epochs
+    
+    # How to tune based on results:
+    # - If model hasn't converged: increase tighten_epochs or patience
+    # - If stopping too early: increase patience or stable_epochs
+    # - If model underfitting: add layers (num_hidden_layers) or increase hidden_dim
+    # - If model overfitting or too slow: reduce layers/hidden_dim
+    # - If optimization stuck in local minima: decrease patience to allow longer search
+    
     result = train(
         problem=problem,
         bounds=bounds,
         data_path=data_path,
-        num_hidden_layers=3,  
-        hidden_dim=72,              
-        patience=250,
-        tighten_epochs=1500,
-        stable_epochs=6
+        num_hidden_layers=num_hidden_layers,  
+        hidden_dim=hidden_dim,              
+        patience=patience,
+        tighten_epochs=tighten_epochs,
+        stable_epochs=stable_epochs
     )
     
     # Dynamically unpack result dict (works for any problem type)

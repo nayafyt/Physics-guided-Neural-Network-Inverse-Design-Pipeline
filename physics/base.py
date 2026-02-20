@@ -1,6 +1,6 @@
 class PhysicsProblem:
     """
-    Base class for physics-guided problems (both continuous and discrete).
+    Base class for physics-guided problems (continuous and discrete).
     
     Subclasses must implement:
     - get_input_output_dims()
@@ -9,9 +9,10 @@ class PhysicsProblem:
     - load_data()
     - forward_physics()
     - constraint_loss() [optional]
-    - is_discrete() [optional]
     - get_output_dir_name() [optional] - custom output directory naming
     - save_results() [optional] - custom result visualization/export
+    
+    Discreteness is handled through forward_physics() and bounds definition.
     """
     
     def get_input_output_dims(self):
@@ -74,13 +75,6 @@ class PhysicsProblem:
             Scalar penalty (default: 0.0 if no constraints)
         """
         return 0.0
-
-    def is_discrete(self):
-        """
-        Whether outputs are discrete design variables.
-        Override to return True for discrete problems.
-        """
-        return False
 
     def get_output_dir_name(self, predictions):
         """
