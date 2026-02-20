@@ -4,10 +4,14 @@ class PhysicsProblem:
     
     Subclasses must implement:
     - get_input_output_dims()
+    - get_bounds()
+    - get_data_path() - returns path to training data CSV
     - load_data()
     - forward_physics()
     - constraint_loss() [optional]
     - is_discrete() [optional]
+    - get_output_dir_name() [optional] - custom output directory naming
+    - save_results() [optional] - custom result visualization/export
     """
     
     def get_input_output_dims(self):
@@ -15,6 +19,24 @@ class PhysicsProblem:
         Returns (input_dim, output_dim)
         - For forward problems: input_dim > 0 (e.g., 2 for indentation)
         - For inverse design: input_dim = 0 (uses latent parameters)
+        """
+        raise NotImplementedError
+
+    def get_bounds(self):
+        """
+        Returns list of (min, max) tuples for each output parameter.
+        
+        Example:
+            return [(30, 250), (300, 1200), (30, 300)]  # For 3 outputs
+        """
+        raise NotImplementedError
+
+    def get_data_path(self):
+        """
+        Returns path to training data CSV file.
+        
+        Example:
+            return 'data/my_data.csv'
         """
         raise NotImplementedError
 
@@ -59,3 +81,36 @@ class PhysicsProblem:
         Override to return True for discrete problems.
         """
         return False
+
+    def get_output_dir_name(self, predictions):
+        """
+        Generate output directory name based on predictions.
+        
+        Args:
+            predictions: [1, output_dim] final predictions
+            
+        Returns:
+            str: Directory name (will be placed in results/)
+            Example: 'vessel_opt_60_24_45_1_1'
+        """
+        # Default: use rounded integer predictions
+        int_vals = predictions.mean(dim=0).cpu().numpy().round().astype(int)
+        param_str = '_'.join(str(v) for v in int_vals)
+        return f"{self.__class__.__name__}_{param_str}"
+
+    def save_results(self, history, epoch_results, output_dir, predictions, physics_output, inp, obs):
+        """
+        Save problem-specific results and visualizations.
+        
+        Args:
+            history: Dict with 'total', 'data', 'constraint' loss lists
+            epoch_results: List of epoch results (if tracked)
+            output_dir: Output directory path
+            predictions: Final model predictions
+            physics_output: Final physics output
+            inp: Input data tensor
+            obs: Observed data tensor
+        """
+        # Default: just plot loss curves
+        from visualization.plotting import plot_loss_curves
+        plot_loss_curves(history, output_dir)

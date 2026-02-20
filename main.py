@@ -121,8 +121,8 @@ def loss_fn(model, inp, obs, problem, wOrder=1.0):
     return total_loss, data_loss, constraint, predictions, physics_output
 
 def train(problem, bounds, data_path,
-          num_hidden_layers=4, hidden_dim=72,
-          patience=250, tighten_epochs=1500, stable_epochs=500):
+          num_hidden_layers, hidden_dim,
+          patience, tighten_epochs, stable_epochs):
     """
     Generic training loop for any PhysicsProblem.
     
@@ -142,7 +142,8 @@ def train(problem, bounds, data_path,
     model = PGNN(input_dim, output_dim, bounds, num_hidden_layers=num_hidden_layers, hidden_dim=hidden_dim)
     model.apply(init_weights)
     
-    optimizer = optim.LBFGS(model.hidden.parameters(), lr=1e-3, max_iter=20, line_search_fn='strong_wolfe')
+    optimizer = optim.Adam(model.hidden.parameters(), lr=1e-3)
+    scheduler = CosineAnnealingLR(optimizer, T_max=tighten_epochs, eta_min=1e-5)
 
     inp, obs = problem.load_data(data_path)
     history = {'total': [], 'data': [], 'constraint': []}
@@ -154,18 +155,12 @@ def train(problem, bounds, data_path,
     last_saved_pred = None  # Track last saved prediction
 
     for epoch in range(1, 10001):
-        def closure():
-            optimizer.zero_grad()
-            total, dL, oL, pred, phys = loss_fn(model, inp, obs, problem, wOrder=1.0)
-            total.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            return total
-        
-        total_loss = optimizer.step(closure)
-        
-        # Re-compute for logging
-        with torch.no_grad():
-            total, dL, oL, pred, phys = loss_fn(model, inp, obs, problem, wOrder=1.0)
+        optimizer.zero_grad()
+        total, dL, oL, pred, phys = loss_fn(model, inp, obs, problem, wOrder=1.0)
+        total.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        scheduler.step()
 
         history['total'].append(total.item())
         history['data'].append(dL.item())
@@ -227,66 +222,57 @@ def train(problem, bounds, data_path,
         final_pred = model(inp)
         final_phys = problem.forward_physics(inp, final_pred)
 
-    # Return epoch_results only for vessel problem
-    if isinstance(problem, VesselProblem):
-        return model, history, inp, obs, final_pred, final_phys, epoch_results
-    else:
-        return model, history, inp, obs, final_pred, final_phys
+    # Return results as dict for dynamic unpacking (supports any problem type)
+    result = {
+        'model': model,
+        'history': history,
+        'inp': inp,
+        'obs': obs,
+        'predictions': final_pred,
+        'physics_output': final_phys,
+        'epoch_results': epoch_results if isinstance(problem, VesselProblem) else None
+    }
+    return result
 
 # 6) Main: run indentation or vessel problem----------
 if __name__ == '__main__':
     # Select problem: IndentationProblem (default) or VesselProblem
-    # problem = IndentationProblem()
-    problem = VesselProblem()  # ← Uncomment to switch to vessel inverse design
+    problem = IndentationProblem()
+    # problem = VesselProblem()  # ← Uncomment to switch to vessel inverse design
 
-    # Design variable bounds (must match output_dim order from get_input_output_dims)
-    # For Indentation: [E1_min, E1_max], [E2_min, E2_max], [E3_min, E3_max]
-    if isinstance(problem, IndentationProblem):
-        bounds = [(30, 250), (300, 1200), (30, 300)]
-    else:
-        # For Vessel: [SAngle, Nrplies, Stepply, SymLam, Thickpl]
-        bounds = [(0, 175), (8, 40), (5, 55), (0, 1), (1, 2)]
-
-    # Adjust data path based on problem type
-    data_path = 'data/data.csv' if isinstance(problem, IndentationProblem) else 'data/pressure_vessel_DS.csv'
+    # Get bounds dynamically from the problem
+    bounds = problem.get_bounds()
+    
+    # Get data path dynamically from the problem
+    data_path = problem.get_data_path()
     
     # ========= PGNN Architecture Configuration =========
-    # Customize the number of hidden layers and their size
-    num_hidden_layers = 3      # ← Change this (e.g., 2, 3, 4, 5, ...)
-    hidden_dim = 72            # ← Change this (e.g., 32, 64, 72, 128, ...)
-
     result = train(
         problem=problem,
         bounds=bounds,
         data_path=data_path,
-        num_hidden_layers=4,  # Pass to train
-        hidden_dim=hidden_dim,                # Pass to train
-        patience=500,
+        num_hidden_layers=3,  
+        hidden_dim=72,              
+        patience=250,
         tighten_epochs=1500,
-        stable_epochs=500
+        stable_epochs=6
     )
     
-    # Unpack result based on problem type
-    if isinstance(problem, VesselProblem):
-        model, history, inp, obs, predictions, physics_output, epoch_results = result
-    else:
-        model, history, inp, obs, predictions, physics_output = result
-        epoch_results = None
+    # Dynamically unpack result dict (works for any problem type)
+    model = result['model']
+    history = result['history']
+    inp = result['inp']
+    obs = result['obs']
+    predictions = result['predictions']
+    physics_output = result['physics_output']
+    epoch_results = result['epoch_results']
 
     # Output & plots---------------------------
     Evals_int = predictions.mean(dim=0).cpu().numpy().round().astype(int)
     
-    # Create output directory with problem-specific naming
-    if isinstance(problem, IndentationProblem):
-        output_dir = os.path.join(
-            OUTPUT_ROOT,
-            f"results_{Evals_int[0]}_{Evals_int[1]}_{Evals_int[2]}"
-        )
-    else:
-        output_dir = os.path.join(
-            OUTPUT_ROOT,
-            f"vessel_opt_{Evals_int[0]}_{Evals_int[1]}_{Evals_int[2]}_{Evals_int[3]}_{Evals_int[4]}"
-        )
+    # Create output directory dynamically using problem's naming scheme
+    output_dir_name = problem.get_output_dir_name(predictions)
+    output_dir = os.path.join(OUTPUT_ROOT, output_dir_name)
     
     os.makedirs(output_dir, exist_ok=True)
     
@@ -298,21 +284,7 @@ if __name__ == '__main__':
     
     print(f"Results will be saved to: {output_dir}/")
 
-    # Save plots for Indentation problem only
-    if isinstance(problem, IndentationProblem):
-        δobs = problem._δobs      # (N,1)
-        Fobs = problem._Fobs      # (N,1)
-        Fpred_full = physics_output  # (N,1)
-
-        # Save CSV and plots using visualization module
-        save_predictions_csv(Fpred_full, δobs, output_dir, Evals_int)
-        plot_force_indentation(δobs, Fobs, Fpred_full, output_dir)
-        plot_loss_curves(history, output_dir)
-    else:
-        # For Vessel problem, save design optimization results and loss curves
-        if epoch_results is not None:
-            save_vessel_epoch_results_csv(epoch_results, output_dir)
-        plot_loss_curves(history, output_dir)
-        evaluate_rank(epoch_results_path=os.path.join(output_dir, "epoch_results.csv"), dataset_path=data_path)
+    # Call problem-specific result saving (handles all visualization)
+    problem.save_results(history, epoch_results, output_dir, predictions, physics_output, inp, obs)
 
     print("Done.")

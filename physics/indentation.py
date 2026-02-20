@@ -22,6 +22,14 @@ class IndentationProblem(PhysicsProblem):
     def get_input_output_dims(self):
         return 2, 3
 
+    def get_bounds(self):
+        """Returns bounds for [E1, E2, E3] parameters (MPa)"""
+        return [(30, 250), (300, 1200), (30, 300)]
+
+    def get_data_path(self):
+        """Returns path to indentation data"""
+        return 'data/data.csv'
+
     
     def load_data(self, path):
         df = pd.read_csv(path)
@@ -68,6 +76,21 @@ class IndentationProblem(PhysicsProblem):
         E2 = predictions[:, 1]
         E3 = predictions[:, 2]
         return torch.mean(torch.relu(E3 - E2)**2)
+
+    def save_results(self, history, epoch_results, output_dir, predictions, physics_output, inp, obs):
+        """Custom result saving for indentation problem"""
+        from visualization.plotting import save_predictions_csv, plot_force_indentation, plot_loss_curves
+        
+        δobs = self._δobs      # (N,1) - use problem's internal data
+        Fobs = self._Fobs      # Observed force
+        Fpred_full = physics_output  # (N,1)
+        
+        Evals_int = predictions.mean(dim=0).cpu().numpy().round().astype(int)
+        
+        # Save CSV and plots
+        save_predictions_csv(Fpred_full, δobs, output_dir, Evals_int)
+        plot_force_indentation(δobs, Fobs, Fpred_full, output_dir)
+        plot_loss_curves(history, output_dir)
 
     def stiffness_calc(self, EInd, nu, nuInd, R,
                        E1, E2, E3, Rworm,

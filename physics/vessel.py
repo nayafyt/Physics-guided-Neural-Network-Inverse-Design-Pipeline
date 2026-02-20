@@ -35,6 +35,14 @@ class VesselProblem(PhysicsProblem):
         # Dummy input (not used) + 5 design parameters output
         return 1, 5
 
+    def get_bounds(self):
+        """Returns bounds for [SAngle, Nrplies, Stepply, SymLam, Thickpl]"""
+        return self.bounds
+
+    def get_data_path(self):
+        """Returns path to vessel optimization data"""
+        return 'data/pressure_vessel_DS.csv'
+
     def is_discrete(self):
         return True
 
@@ -127,3 +135,18 @@ class VesselProblem(PhysicsProblem):
 
     def get_best_design(self):
         return self.best_design_found
+    def save_results(self, history, epoch_results, output_dir, predictions, physics_output, inp, obs):
+        """Save vessel-specific results: epoch tracking and loss curves."""
+        import os
+        from visualization.plotting import plot_loss_curves, save_vessel_epoch_results_csv, evaluate_rank
+        
+        # Save epoch results if available
+        if epoch_results is not None:
+            epoch_csv_path = os.path.join(output_dir, 'epoch_results.csv')
+            save_vessel_epoch_results_csv(epoch_results, output_dir)
+            
+            # Evaluate rank of predicted design against dataset
+            evaluate_rank(epoch_results_path=epoch_csv_path, dataset_path=self.get_data_path())
+        
+        # Save loss curves
+        plot_loss_curves(history, output_dir)
