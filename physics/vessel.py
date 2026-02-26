@@ -1,46 +1,54 @@
-# vessel.py
 from physics.base import PhysicsProblem
 import torch
 import pandas as pd
 
+
 class VesselProblem(PhysicsProblem):
     """
-    Inverse-design problem for pressure vessel optimization.
-    Objective: Find design parameters that minimize the objective value.
-    Method: Hard nearest-neighbor lookup in dataset.
+    Inverse design: find pressure vessel parameters that minimize the objective.
+
+    CSV data: design-space with parameter combos and their objective (min_val).
+    NN predicts: SAngle, Nrplies, Stepply, SymLam, Thickpl.
+    Physics: soft nearest-neighbor lookup in the dataset (differentiable).
+    Loss: drives the NN toward the design with the lowest objective.
     """
 
     def __init__(self):
-        self._inp = None
-        self._obs = None
+        # Cached data for save_results
+        self._inputs = None
+        self._targets = None
 
+        # Design parameters the NN will predict 
         self.design_params = [
-            'SAngle', 'Nrplies', 'Stepply', 'SymLam', 'Thickpl'
+            'SAngle',       # spiral angle (0–175°)
+            'Nrplies',      # number of plies (8–40)
+            'Stepply',      # step ply (5–55)
+            'SymLam',       # symmetric laminate (0–1, discrete)
+            'Thickpl',      # ply thickness (1.0–2.0 mm)
         ]
 
+        # Bounds: one (min, max) per design parameter 
         self.bounds = [
             (0, 175), (8, 40), (5, 55), (0, 1), (1.0, 2.0)
         ]
 
-        
-        self.X = None  # [N, 5] design tensor
-        self.y = None  # [N] objective values
-        self.min_val_min = None
-        self.steps = None  # Step size for each parameter (for rounding)
+        # Dataset state (populated in load_data) 
+        self.X = None               # [N, output_dim] design parameter tensor
+        self.y = None               # [N] objective values (shifted so best = 0)
+        self.min_val_min = None     # original minimum objective value
+        self.steps = None           # step size per parameter (for rounding)
 
         self.best_design_found = None
         self.best_objective_found = float('inf')
 
     def get_input_output_dims(self):
-        # Dummy input (not used) + 5 design parameters output
-        return 1, 5
+        # Dummy input (not used) + output_dim auto-sized from design_params
+        return 1, len(self.design_params)
 
     def get_bounds(self):
-        """Returns bounds for [SAngle, Nrplies, Stepply, SymLam, Thickpl]"""
         return self.bounds
 
     def get_data_path(self):
-        """Returns path to vessel optimization data"""
         return 'data/pressure_vessel_DS.csv'
 
     def load_data(self, csv_path):
@@ -51,12 +59,12 @@ class VesselProblem(PhysicsProblem):
         min_val = torch.tensor(df["min_val"].values, dtype=torch.float32)
 
         self.min_val_min = min_val.min().item()
-        y = min_val - self.min_val_min  # Shift: best design has objective = 0
+        y = min_val - self.min_val_min  # shift so best design has objective = 0
 
         self.X = X
         self.y = y
 
-        # Compute step size for each parameter (minimum difference between unique values)
+        # Compute step size per parameter (minimum gap between unique values)
         self.steps = []
         for i, param in enumerate(self.design_params):
             unique_vals = sorted(df[param].unique())
@@ -77,39 +85,39 @@ class VesselProblem(PhysicsProblem):
         print(f"  Best design: {self.best_design_found}")
         print(f"  Parameter steps: {dict(zip(self.design_params, self.steps))}")
 
-        inp = torch.zeros(1, 1)  # Dummy input
-        obs = torch.zeros(1, 1)  # Target: objective = 0
-        self._inp = inp
-        self._obs = obs
-        return inp, obs
+        # Dummy tensors — forward_physics uses self.X / self.y instead
+        inputs = torch.zeros(1, 1)
+        targets = torch.zeros(1, 1)
+        self._inputs = inputs
+        self._targets = targets
+        return inputs, targets
 
-    def forward_physics(self, inp, predictions):
+    def forward_physics(self, inputs, predictions):
         """
-        Soft nearest-neighbor lookup using softmax over distances.
-        This is differentiable - gradients flow back to predictions.
+        Soft nearest-neighbor lookup: differentiable so gradients flow back.
+        Computes weighted average of objectives based on distance to dataset.
         """
-        # Normalize both for fair distance computation
+        # Normalize both predicted and dataset params to [0, 1] for fair distance
         X_norm = self.X.clone()
         pred_norm = predictions.clone()
-        for i in range(len(self.bounds)):
-            lo, hi = self.bounds[i]
+        for i, (lo, hi) in enumerate(self.bounds):
             X_norm[:, i] = (self.X[:, i] - lo) / (hi - lo)
             pred_norm[:, i] = (predictions[:, i] - lo) / (hi - lo)
 
         # Compute distances to all dataset points
-        diff = pred_norm.unsqueeze(1) - X_norm.unsqueeze(0)  # [B, N, 5]
+        diff = pred_norm.unsqueeze(1) - X_norm.unsqueeze(0)  # [B, N, output_dim]
         dist = torch.norm(diff, dim=2)  # [B, N]
 
-        # Soft nearest-neighbor: weighted average
-        alpha = 10.0  # Higher alpha -> closer to hard nearest neighbor
-        weights = torch.softmax(-alpha * dist, dim=1)  # [B,N]
+        # Soft nearest-neighbor via softmax weights
+        alpha = 10.0  # higher = closer to hard nearest-neighbor
+        weights = torch.softmax(-alpha * dist, dim=1)          # [B, N]
         y_pred = torch.sum(weights * self.y.unsqueeze(0), dim=1)  # [B]
 
-        # Track best solution found (with rounding for reporting)
+        # Track best solution found
         # Find which dataset point each prediction is closest to
         nearest_idx = torch.argmin(dist, dim=1)
-        pred_rounded = self.X[nearest_idx]  # Get actual design from dataset
-        
+        pred_rounded = self.X[nearest_idx]
+
         min_val = y_pred.min().item()
         if min_val < self.best_objective_found:
             idx = torch.argmin(y_pred).item()
@@ -132,18 +140,14 @@ class VesselProblem(PhysicsProblem):
 
     def get_best_design(self):
         return self.best_design_found
-    def save_results(self, history, epoch_results, output_dir, predictions, physics_output, inp, obs):
-        """Save vessel-specific results: epoch tracking and loss curves."""
+
+    def save_results(self, history, epoch_results, output_dir, predictions, computed_output, inputs, targets):
         import os
         from visualization.plotting import plot_loss_curves, save_vessel_epoch_results_csv, evaluate_rank
-        
-        # Save epoch results if available
+
         if epoch_results is not None:
             epoch_csv_path = os.path.join(output_dir, 'epoch_results.csv')
             save_vessel_epoch_results_csv(epoch_results, output_dir)
-            
-            # Evaluate rank of predicted design against dataset
             evaluate_rank(epoch_results_path=epoch_csv_path, dataset_path=self.get_data_path())
-        
-        # Save loss curves
+
         plot_loss_curves(history, output_dir)
