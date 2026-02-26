@@ -156,7 +156,7 @@ def train(problem, bounds, data_path,
     prev_rounded = None
     last_saved_pred = None  # Track last saved prediction
 
-    for epoch in range(1, 10001):
+    for epoch in range(1, tighten_epochs + 1):
         optimizer.zero_grad()
         total, dL, oL, pred, phys = loss_fn(model, inp, obs, problem, wOrder=1.0)
         total.backward()
@@ -254,7 +254,7 @@ if __name__ == '__main__':
 
     # TRAINING HYPERPARAMETERS - ADJUST TO CONTROL OPTIMIZATION
     patience = 250             # ← Early stopping: stop if loss doesn't improve for N epochs
-    tighten_epochs = 1500      # ← Maximum training epochs (upper bound on total epochs)
+    tighten_epochs = 10000     # ← Maximum training epochs (upper bound on total epochs)
     stable_epochs = 6          # ← Stop if predictions stable for N consecutive epochs
     
     # How to tune based on results:
