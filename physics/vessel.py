@@ -1,6 +1,10 @@
 from physics.base import PhysicsProblem
 import torch
+import numpy as np
 import pandas as pd
+
+# Available objective modes for multi-objective optimization
+OBJECTIVE_MODES = ['min_val', 'tchebycheff', 'product', 'pnorm']
 
 
 class VesselProblem(PhysicsProblem):
@@ -11,14 +15,36 @@ class VesselProblem(PhysicsProblem):
     NN predicts: SAngle, Nrplies, Stepply, SymLam, Thickpl.
     Physics: soft nearest-neighbor lookup in the dataset (differentiable).
     Loss: drives the NN toward the design with the lowest objective.
+
+    Supports multiple objective modes:
+        - 'min_val':      Original pre-computed objective (default)
+        - 'tchebycheff':  Minimizes the worst of S11/2500, S22/185, Thick (normalized to [0,1])
+        - 'product':      Minimizes S11/2500 * S22/185 * Thick (all must be small)
+        - 'pnorm':        Smooth approximation to Tchebycheff using L4 norm
     """
 
-    def __init__(self):
+    def __init__(self, objective_mode='min_val', alpha=10.0):
+        """
+        Args:
+            objective_mode: How to compute the objective. One of:
+                'min_val'     - use pre-computed min_val column (default)
+                'tchebycheff' - minimize max(S11/2500, S22/185, Thick) normalized to [0,1]
+                'product'     - minimize S11/2500 * S22/185 * Thick
+                'pnorm'       - minimize (S11^4 + S22^4 + Thick^4)^(1/4) normalized to [0,1]
+            alpha: Softmax sharpness for nearest-neighbor lookup.
+                Higher = closer to hard nearest-neighbor (default: 10.0)
+        """
+        if objective_mode not in OBJECTIVE_MODES:
+            raise ValueError(f"objective_mode must be one of {OBJECTIVE_MODES}, got '{objective_mode}'")
+
         # Cached data for save_results
         self._inputs = None
         self._targets = None
 
-        # Design parameters the NN will predict 
+        self.objective_mode = objective_mode
+        self.alpha = alpha
+
+        # Design parameters the NN will predict
         self.design_params = [
             'SAngle',       # spiral angle (0–175°)
             'Nrplies',      # number of plies (8–40)
@@ -27,12 +53,12 @@ class VesselProblem(PhysicsProblem):
             'Thickpl',      # ply thickness (1.0–2.0 mm)
         ]
 
-        # Bounds: one (min, max) per design parameter 
+        # Bounds: one (min, max) per design parameter
         self.bounds = [
             (0, 175), (8, 40), (5, 55), (0, 1), (1.0, 2.0)
         ]
 
-        # Dataset state (populated in load_data) 
+        # Dataset state (populated in load_data)
         self.X = None               # [N, output_dim] design parameter tensor
         self.y = None               # [N] objective values (shifted so best = 0)
         self.min_val_min = None     # original minimum objective value
@@ -51,15 +77,47 @@ class VesselProblem(PhysicsProblem):
     def get_data_path(self):
         return 'data/pressure_vessel_DS.csv'
 
+    def _compute_objective(self, df):
+        """Compute objective values based on the selected mode."""
+        s11 = df["S11"].values
+        s22 = df["S22"].values
+        thick = df["Thick"].values
+
+        if self.objective_mode == 'min_val':
+            return df["min_val"].values
+
+        # Normalize S11/2500, S22/185 to bring them to comparable scale
+        o1 = s11 / 2500.0
+        o2 = s22 / 185.0
+        o3 = thick
+
+        if self.objective_mode == 'tchebycheff':
+            # Normalize each to [0,1], then take max → minimizes the worst objective
+            o1n = (o1 - o1.min()) / (o1.max() - o1.min())
+            o2n = (o2 - o2.min()) / (o2.max() - o2.min())
+            o3n = (o3 - o3.min()) / (o3.max() - o3.min())
+            return np.maximum.reduce([o1n, o2n, o3n])
+
+        elif self.objective_mode == 'product':
+            # Product: all three must be small for the product to be small
+            return o1 * o2 * o3
+
+        elif self.objective_mode == 'pnorm':
+            # L4 norm of normalized objectives: smooth approximation to max
+            o1n = (o1 - o1.min()) / (o1.max() - o1.min())
+            o2n = (o2 - o2.min()) / (o2.max() - o2.min())
+            o3n = (o3 - o3.min()) / (o3.max() - o3.min())
+            p = 4
+            return (o1n**p + o2n**p + o3n**p) ** (1/p)
+
     def load_data(self, csv_path):
         df = pd.read_csv(csv_path)
         df.columns = df.columns.str.strip()
 
         X = torch.tensor(df[self.design_params].values, dtype=torch.float32)
 
-        # Multi-objective: normalize S11 and S22, then combine
-        objective = df["S11"] / 2500.0 + df["S22"] / 185.0
-        min_val = torch.tensor(objective.values, dtype=torch.float32)
+        obj_values = self._compute_objective(df)
+        min_val = torch.tensor(obj_values, dtype=torch.float32)
 
         self.min_val_min = min_val.min().item()
         y = min_val - self.min_val_min  # shift so best design has objective = 0
@@ -83,8 +141,9 @@ class VesselProblem(PhysicsProblem):
         self.best_objective_found = self.min_val_min
 
         print(f"\n[VesselProblem] Loaded dataset:")
+        print(f"  Objective mode: {self.objective_mode} | Alpha: {self.alpha}")
         print(f"  Size: {len(df)}")
-        print(f"  Best objective (original): {self.min_val_min:.6f}")
+        print(f"  Best objective: {self.min_val_min:.6f}")
         print(f"  Best design: {self.best_design_found}")
         print(f"  Parameter steps: {dict(zip(self.design_params, self.steps))}")
 
@@ -112,7 +171,7 @@ class VesselProblem(PhysicsProblem):
         dist = torch.norm(diff, dim=2)  # [B, N]
 
         # Soft nearest-neighbor via softmax weights
-        alpha = 10.0  # higher = closer to hard nearest-neighbor
+        alpha = self.alpha  # higher = closer to hard nearest-neighbor
         weights = torch.softmax(-alpha * dist, dim=1)          # [B, N]
         y_pred = torch.sum(weights * self.y.unsqueeze(0), dim=1)  # [B]
 

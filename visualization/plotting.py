@@ -137,7 +137,6 @@ def evaluate_rank(epoch_results_path, dataset_path):
 
     design_cols = ['SAngle', 'Nrplies', 'Stepply', 'SymLam', 'Thickpl']
 
-
     last_row = epoch_df.iloc[-1]
 
     predicted = np.array([
@@ -152,23 +151,16 @@ def evaluate_rank(epoch_results_path, dataset_path):
     print(predicted)
 
     X = vessel_df[design_cols].values
-    # Multi-objective: S11/2500 + S22/185
-    y = (vessel_df["S11"] / 2500.0 + vessel_df["S22"] / 185.0).values
+    y = vessel_df["min_val"].values
 
     dists = np.linalg.norm(X - predicted, axis=1)
     nearest_idx = np.argmin(dists)
 
     nearest_design = X[nearest_idx]
-    nearest_objective = y[nearest_idx]
+    nearest_row = vessel_df.iloc[nearest_idx]
 
     global_best_idx = np.argmin(y)
-    global_best_design = X[global_best_idx]
     global_best_objective = y[global_best_idx]
-
-    # Original min_val from dataset
-    min_val = vessel_df["min_val"].values
-    nearest_min_val = min_val[nearest_idx]
-    dataset_min_val = min_val.min()
 
     sorted_indices = np.argsort(y)
     rank = np.where(sorted_indices == nearest_idx)[0][0] + 1
@@ -176,21 +168,22 @@ def evaluate_rank(epoch_results_path, dataset_path):
     print("\nNearest dataset design:")
     print(nearest_design)
 
-    print(f"\nNearest objective (S11/2500+S22/185): {nearest_objective:.6f}")
-    print(f"Nearest design min_val: {nearest_min_val:.6f}")
-    print(f"Dataset min of min_val: {dataset_min_val:.6f}")
-    print(f"Global best objective: {global_best_objective:.6f}")
-    print(f"Rank in dataset: {rank} / {len(vessel_df)}")
+    print(f"\nNearest min_val: {nearest_row['min_val']:.6f}")
+    print(f"Nearest S11:     {nearest_row['S11']:.1f}  (S11/2500 = {nearest_row['S11']/2500:.3f})")
+    print(f"Nearest S22:     {nearest_row['S22']:.1f}  (S22/185  = {nearest_row['S22']/185:.3f})")
+    print(f"Nearest Thick:   {nearest_row['Thick']:.3f}")
+    print(f"Dataset min of min_val: {global_best_objective:.6f}")
+    print(f"Rank in dataset (by min_val): {rank} / {len(vessel_df)}")
 
     print(f"\nDistance to nearest dataset design: {dists[nearest_idx]:.6f}")
-    print(f"Distance to global best design: {np.linalg.norm(global_best_design - predicted):.6f}")
 
     print("\n====================================\n")
 
     return {
-        "nearest_objective": nearest_objective,
-        "global_best_objective": global_best_objective,
-        "nearest_min_val": nearest_min_val,
-        "dataset_min_val": dataset_min_val,
+        "nearest_min_val": nearest_row['min_val'],
+        "nearest_S11": nearest_row['S11'],
+        "nearest_S22": nearest_row['S22'],
+        "nearest_Thick": nearest_row['Thick'],
+        "dataset_min_val": global_best_objective,
         "rank": rank
     }
