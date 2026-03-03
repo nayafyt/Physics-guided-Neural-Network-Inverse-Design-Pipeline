@@ -56,7 +56,10 @@ class VesselProblem(PhysicsProblem):
         df.columns = df.columns.str.strip()
 
         X = torch.tensor(df[self.design_params].values, dtype=torch.float32)
-        min_val = torch.tensor(df["min_val"].values, dtype=torch.float32)
+
+        # Multi-objective: normalize S11 and S22, then combine
+        objective = df["S11"] / 2500.0 + df["S22"] / 185.0
+        min_val = torch.tensor(objective.values, dtype=torch.float32)
 
         self.min_val_min = min_val.min().item()
         y = min_val - self.min_val_min  # shift so best design has objective = 0

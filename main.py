@@ -242,8 +242,8 @@ def train(problem, bounds, data_path,
 if __name__ == '__main__':
     # SELECT YOUR PHYSICS PROBLEM
     # Uncomment ONE of the following:
-    problem = IndentationProblem()          # Inverse indentation problem (default)
-    # problem = VesselProblem()              # Pressure vessel optimization
+    # problem = IndentationProblem()          # Inverse indentation problem (default)
+    problem = VesselProblem()              # Pressure vessel optimization
     # problem = YourProblem()                # Your custom physics problem
 
     # Get bounds and data path dynamically from the problem

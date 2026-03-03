@@ -142,7 +142,7 @@ def evaluate_rank(epoch_results_path, dataset_path):
 
     predicted = np.array([
         last_row['SAngle'],
-        last_row['Nrplies'],   
+        last_row['Nrplies'],
         last_row['Stepply'],
         last_row['SymLam'],
         last_row['Thickpl']
@@ -152,7 +152,8 @@ def evaluate_rank(epoch_results_path, dataset_path):
     print(predicted)
 
     X = vessel_df[design_cols].values
-    y = vessel_df["min_val"].values
+    # Multi-objective: S11/2500 + S22/185
+    y = (vessel_df["S11"] / 2500.0 + vessel_df["S22"] / 185.0).values
 
     dists = np.linalg.norm(X - predicted, axis=1)
     nearest_idx = np.argmin(dists)
@@ -164,13 +165,20 @@ def evaluate_rank(epoch_results_path, dataset_path):
     global_best_design = X[global_best_idx]
     global_best_objective = y[global_best_idx]
 
+    # Original min_val from dataset
+    min_val = vessel_df["min_val"].values
+    nearest_min_val = min_val[nearest_idx]
+    dataset_min_val = min_val.min()
+
     sorted_indices = np.argsort(y)
     rank = np.where(sorted_indices == nearest_idx)[0][0] + 1
 
     print("\nNearest dataset design:")
     print(nearest_design)
 
-    print(f"\nNearest objective (real min_val): {nearest_objective:.6f}")
+    print(f"\nNearest objective (S11/2500+S22/185): {nearest_objective:.6f}")
+    print(f"Nearest design min_val: {nearest_min_val:.6f}")
+    print(f"Dataset min of min_val: {dataset_min_val:.6f}")
     print(f"Global best objective: {global_best_objective:.6f}")
     print(f"Rank in dataset: {rank} / {len(vessel_df)}")
 
@@ -182,5 +190,7 @@ def evaluate_rank(epoch_results_path, dataset_path):
     return {
         "nearest_objective": nearest_objective,
         "global_best_objective": global_best_objective,
+        "nearest_min_val": nearest_min_val,
+        "dataset_min_val": dataset_min_val,
         "rank": rank
     }
