@@ -245,13 +245,7 @@ if __name__ == '__main__':
     # problem = IndentationProblem()          # Inverse indentation problem (default)
     # problem = YourProblem()                # Your custom physics problem
 
-    # VESSEL PROBLEM — choose objective mode and alpha:
-    #   objective_mode: 'min_val'     — original pre-computed objective (default, best results)
-    #                   'tchebycheff' — minimizes worst of normalized S11/2500, S22/185, Thick
-    #                   'product'     — minimizes S11/2500 * S22/185 * Thick
-    #                   'pnorm'       — smooth Tchebycheff approximation (L4 norm)
-    #   alpha: softmax sharpness (higher = sharper nearest-neighbor, try 10, 50, 200)
-    problem = VesselProblem(objective_mode='min_val', alpha=50.0)
+    problem = VesselProblem(objective_mode='multi_objective', alpha=50.0)
 
     # Get bounds and data path dynamically from the problem
     bounds = problem.get_bounds()

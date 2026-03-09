@@ -58,27 +58,22 @@ def save_vessel_design_csv(predictions, physics_output, output_dir, design_int):
     print(f"Saved vessel design to {jobName}")
 
 def save_vessel_epoch_results_csv(epoch_results, output_dir):
-    """
-    Export vessel design results for each epoch to CSV file.
-    Shows how the design evolved throughout training.
-    
-    Args:
-        epoch_results: List of dicts, each containing:
-                      {'epoch': int, 'predictions': [5], 'physics_output': [1]}
-        output_dir: folder to save CSV
-    """
     os.makedirs(output_dir, exist_ok=True)
-    
     jobName = os.path.join(output_dir, "epoch_results.csv")
-    
+
+    obj_dim = epoch_results[0]['physics_output'].shape[-1]
+
     with open(jobName, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['Epoch', 'SAngle', 'Nrplies', 'Stepply', 'SymLam', 'Thickpl', 'min_val'])
+        design_cols = ['Epoch', 'SAngle', 'Nrplies', 'Stepply', 'SymLam', 'Thickpl']
+        if obj_dim == 1:
+            writer.writerow(design_cols + ['min_val'])
+        else:
+            writer.writerow(design_cols + ['obj_S11', 'obj_S22', 'obj_Thick'])
         for result in epoch_results:
-            epoch = result['epoch']
-            pred = result['predictions'][0]  # batch_size=1, get first (only) element
-            phys = result['physics_output'][0, 0]  # batch_size=1, get scalar
-            writer.writerow([epoch, pred[0], pred[1], pred[2], pred[3], pred[4], phys])
+            pred = result['predictions'][0]
+            phys = result['physics_output'][0]  # [K]
+            writer.writerow([result['epoch'], *pred, *phys])
     print(f"Saved epoch results to {jobName}")
 
 def plot_force_indentation(δobs, Fobs, Fpred_full, output_dir):
@@ -128,62 +123,98 @@ def plot_loss_curves(history, output_dir):
     plt.savefig(os.path.join(output_dir, "loss_curves.png"), dpi=300)
     plt.close()
 
-def evaluate_rank(epoch_results_path, dataset_path):
-
+def evaluate_rank(epoch_results_path, dataset_path, objective_mode='min_val'):
     epoch_df = pd.read_csv(epoch_results_path)
     vessel_df = pd.read_csv(dataset_path)
-
     vessel_df.columns = vessel_df.columns.str.strip()
 
     design_cols = ['SAngle', 'Nrplies', 'Stepply', 'SymLam', 'Thickpl']
 
     last_row = epoch_df.iloc[-1]
-
-    predicted = np.array([
-        last_row['SAngle'],
-        last_row['Nrplies'],
-        last_row['Stepply'],
-        last_row['SymLam'],
-        last_row['Thickpl']
-    ])
+    predicted = np.array([last_row[c] for c in design_cols])
 
     print("\nPredicted design from last epoch:")
     print(predicted)
 
     X = vessel_df[design_cols].values
-    y = vessel_df["min_val"].values
-
     dists = np.linalg.norm(X - predicted, axis=1)
     nearest_idx = np.argmin(dists)
-
-    nearest_design = X[nearest_idx]
     nearest_row = vessel_df.iloc[nearest_idx]
 
-    global_best_idx = np.argmin(y)
-    global_best_objective = y[global_best_idx]
+    s11_norm = nearest_row['S11'] / 2500.0
+    s22_norm = nearest_row['S22'] / 185.0
+    thick_norm = nearest_row['Thick'] * 0.12
+    min_val = nearest_row['min_val']
 
-    sorted_indices = np.argsort(y)
-    rank = np.where(sorted_indices == nearest_idx)[0][0] + 1
+    print(f"\nNearest dataset design:")
+    print(X[nearest_idx])
+    print(f"\n  S11/2500:    {s11_norm:.4f}  (S11 = {nearest_row['S11']:.1f})")
+    print(f"  S22/185:     {s22_norm:.4f}  (S22 = {nearest_row['S22']:.1f})")
+    print(f"  Thick*0.12:  {thick_norm:.4f}  (Thick = {nearest_row['Thick']:.3f})")
+    print(f"  min_val:     {min_val:.6f}")
 
-    print("\nNearest dataset design:")
-    print(nearest_design)
+    # Primary rank is always by min_val
+    all_min_val = vessel_df["min_val"].values
+    rank = (np.argsort(np.argsort(all_min_val))[nearest_idx]) + 1
+    print(f"\nRank in dataset (by min_val): {rank} / {len(vessel_df)}")
+    print(f"  Nearest: {min_val:.6f}  |  Dataset best: {all_min_val.min():.6f}")
 
-    print(f"\nNearest min_val: {nearest_row['min_val']:.6f}")
-    print(f"Nearest S11:     {nearest_row['S11']:.1f}  (S11/2500 = {nearest_row['S11']/2500:.3f})")
-    print(f"Nearest S22:     {nearest_row['S22']:.1f}  (S22/185  = {nearest_row['S22']/185:.3f})")
-    print(f"Nearest Thick:   {nearest_row['Thick']:.3f}")
-    print(f"Dataset min of min_val: {global_best_objective:.6f}")
-    print(f"Rank in dataset (by min_val): {rank} / {len(vessel_df)}")
+    if objective_mode == 'multi_objective':
+        obj_names = ['S11/2500', 'S22/185', 'Thick*0.12']
+        all_s11 = vessel_df["S11"].values / 2500.0
+        all_s22 = vessel_df["S22"].values / 185.0
+        all_thick = vessel_df["Thick"].values * 0.12
+        all_objs = [all_s11, all_s22, all_thick]
+        nearest_vals = [s11_norm, s22_norm, thick_norm]
 
-    print(f"\nDistance to nearest dataset design: {dists[nearest_idx]:.6f}")
+        print(f"\nSupporting objective ranks:")
+        for name, col, val in zip(obj_names, all_objs, nearest_vals):
+            rank_i = (np.argsort(np.argsort(col))[nearest_idx]) + 1
+            print(f"  {name:12s}: {val:.4f}  |  rank {rank_i:5d} / {len(vessel_df)}  (best: {col.min():.4f})")
 
-    print("\n====================================\n")
+    print(f"\nDistance to nearest design: {dists[nearest_idx]:.6f}")
+    print("====================================\n")
 
-    return {
-        "nearest_min_val": nearest_row['min_val'],
-        "nearest_S11": nearest_row['S11'],
-        "nearest_S22": nearest_row['S22'],
-        "nearest_Thick": nearest_row['Thick'],
-        "dataset_min_val": global_best_objective,
-        "rank": rank
-    }
+
+def plot_multi_objective_curves(epoch_results_path, dataset_path, output_dir):
+    epoch_df = pd.read_csv(epoch_results_path)
+    vessel_df = pd.read_csv(dataset_path)
+    vessel_df.columns = vessel_df.columns.str.strip()
+
+    design_cols = ['SAngle', 'Nrplies', 'Stepply', 'SymLam', 'Thickpl']
+    X = vessel_df[design_cols].values
+
+    epochs, s11_vals, s22_vals, thick_vals = [], [], [], []
+
+    for _, row in epoch_df.iterrows():
+        pred = np.array([row[c] for c in design_cols])
+        dists = np.linalg.norm(X - pred, axis=1)
+        nearest = vessel_df.iloc[np.argmin(dists)]
+
+        epochs.append(row['Epoch'])
+        s11_vals.append(nearest['S11'] / 2500.0)
+        s22_vals.append(nearest['S22'] / 185.0)
+        thick_vals.append(nearest['Thick'] * 0.12)
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+    axes[0].plot(epochs, s11_vals, 'b-o', markersize=2)
+    axes[0].set_title('S11 / 2500')
+    axes[0].set_xlabel('Epoch')
+    axes[0].set_ylabel('Value')
+
+    axes[1].plot(epochs, s22_vals, 'r-o', markersize=2)
+    axes[1].set_title('S22 / 185')
+    axes[1].set_xlabel('Epoch')
+    axes[1].set_ylabel('Value')
+
+    axes[2].plot(epochs, thick_vals, 'g-o', markersize=2)
+    axes[2].set_title('Thick * 0.12')
+    axes[2].set_xlabel('Epoch')
+    axes[2].set_ylabel('Value')
+
+    fig.suptitle('Multi-Objective Components Over Training')
+    fig.tight_layout()
+    fig.savefig(os.path.join(output_dir, "multi_objective_curves.png"), dpi=300)
+    plt.close(fig)
+    print(f"Saved multi-objective curves to {output_dir}/multi_objective_curves.png")
