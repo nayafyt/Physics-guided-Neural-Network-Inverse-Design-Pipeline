@@ -178,40 +178,32 @@ def evaluate_rank(epoch_results_path, dataset_path, objective_mode='min_val'):
 
 def plot_multi_objective_curves(epoch_results_path, dataset_path, output_dir):
     epoch_df = pd.read_csv(epoch_results_path)
-    vessel_df = pd.read_csv(dataset_path)
-    vessel_df.columns = vessel_df.columns.str.strip()
 
-    design_cols = ['SAngle', 'Nrplies', 'Stepply', 'SymLam', 'Thickpl']
-    X = vessel_df[design_cols].values
-
-    epochs, s11_vals, s22_vals, thick_vals = [], [], [], []
-
-    for _, row in epoch_df.iterrows():
-        pred = np.array([row[c] for c in design_cols])
-        dists = np.linalg.norm(X - pred, axis=1)
-        nearest = vessel_df.iloc[np.argmin(dists)]
-
-        epochs.append(row['Epoch'])
-        s11_vals.append(nearest['S11'] / 2500.0)
-        s22_vals.append(nearest['S22'] / 185.0)
-        thick_vals.append(nearest['Thick'] * 0.12)
+    # Use the normalized [0,1] values already computed by forward_physics
+    epochs = epoch_df['Epoch'].values
+    s11_vals = epoch_df['obj_S11'].values
+    s22_vals = epoch_df['obj_S22'].values
+    thick_vals = epoch_df['obj_Thick'].values
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
     axes[0].plot(epochs, s11_vals, 'b-o', markersize=2)
-    axes[0].set_title('S11 / 2500')
+    axes[0].set_title('S11 (normalized)')
     axes[0].set_xlabel('Epoch')
-    axes[0].set_ylabel('Value')
+    axes[0].set_ylabel('Value [0=best, 1=worst]')
+    axes[0].set_ylim(-0.05, 1.05)
 
     axes[1].plot(epochs, s22_vals, 'r-o', markersize=2)
-    axes[1].set_title('S22 / 185')
+    axes[1].set_title('S22 (normalized)')
     axes[1].set_xlabel('Epoch')
-    axes[1].set_ylabel('Value')
+    axes[1].set_ylabel('Value [0=best, 1=worst]')
+    axes[1].set_ylim(-0.05, 1.05)
 
     axes[2].plot(epochs, thick_vals, 'g-o', markersize=2)
-    axes[2].set_title('Thick * 0.12')
+    axes[2].set_title('Thickness (normalized)')
     axes[2].set_xlabel('Epoch')
-    axes[2].set_ylabel('Value')
+    axes[2].set_ylabel('Value [0=best, 1=worst]')
+    axes[2].set_ylim(-0.05, 1.05)
 
     fig.suptitle('Multi-Objective Components Over Training')
     fig.tight_layout()
