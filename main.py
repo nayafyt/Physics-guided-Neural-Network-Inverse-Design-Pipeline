@@ -17,7 +17,6 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import pandas as pd
 import math
-from scipy.optimize import curve_fit
 import os
 from physics.indentation import IndentationProblem
 from physics.vessel import VesselProblem
