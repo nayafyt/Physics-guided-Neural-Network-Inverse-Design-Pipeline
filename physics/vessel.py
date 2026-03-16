@@ -1,30 +1,19 @@
 from physics.base import PhysicsProblem
 import torch
-import numpy as np
 import pandas as pd
-
-OBJECTIVE_MODES = ['min_val', 'multi_objective']
 
 
 class VesselProblem(PhysicsProblem):
     """
-    Inverse design: find pressure vessel parameters that minimize the objective.
+    Inverse design: find pressure vessel parameters that minimize min_val.
 
     NN predicts: SAngle, Nrplies, Stepply, SymLam, Thickpl.
     Physics: soft nearest-neighbor lookup in the dataset (differentiable).
-
-    Objective modes:
-        - 'min_val': pre-computed objective from CSV
-        - 'multi_objective': 3 independent objectives (S11/2500, S22/185, Thick*0.12)
     """
 
-    def __init__(self, objective_mode='min_val', alpha=10.0):
-        if objective_mode not in OBJECTIVE_MODES:
-            raise ValueError(f"objective_mode must be one of {OBJECTIVE_MODES}, got '{objective_mode}'")
-
+    def __init__(self, alpha=10.0):
         self._inputs = None
         self._targets = None
-        self.objective_mode = objective_mode
         self.alpha = alpha
 
         self.design_params = ['SAngle', 'Nrplies', 'Stepply', 'SymLam', 'Thickpl']
@@ -32,13 +21,11 @@ class VesselProblem(PhysicsProblem):
 
         self.X = None
         self.y = None
-        self.min_val_min = None
         self.steps = None
         self.best_design_found = None
         self.best_objective_found = float('inf')
 
     def get_input_output_dims(self):
-        # Dummy input (not used) + output_dim auto-sized from design_params
         return 1, len(self.design_params)
 
     def get_bounds(self):
@@ -47,33 +34,20 @@ class VesselProblem(PhysicsProblem):
     def get_data_path(self):
         return 'data/pressure_vessel_DS.csv'
 
-    def _compute_objective(self, df):
-        if self.objective_mode == 'min_val':
-            return df["min_val"].values
-
-        s11 = df["S11"].values / 2500.0
-        s22 = df["S22"].values / 185.0
-        thick = df["Thick"].values * 0.12
-        return np.column_stack([s11, s22, thick])
-
-
     def load_data(self, csv_path):
         df = pd.read_csv(csv_path)
         df.columns = df.columns.str.strip()
 
         X = torch.tensor(df[self.design_params].values, dtype=torch.float32)
 
-        obj_values = self._compute_objective(df)
-        obj_tensor = torch.tensor(obj_values, dtype=torch.float32)
-        if obj_tensor.dim() == 1:
-            obj_tensor = obj_tensor.unsqueeze(1)  # [N, 1]
+        obj_values = df["min_val"].values
+        obj_tensor = torch.tensor(obj_values, dtype=torch.float32).unsqueeze(1)  # [N, 1]
 
-        obj_min = obj_tensor.min(dim=0).values  # [K]
-        obj_max = obj_tensor.max(dim=0).values  # [K]
+        obj_min = obj_tensor.min(dim=0).values
+        obj_max = obj_tensor.max(dim=0).values
         obj_range = obj_max - obj_min
-        obj_range[obj_range == 0] = 1.0  # avoid division by zero
-        # Normalize each objective to [0, 1] so all contribute equally to the loss
-        self.y = (obj_tensor - obj_min) / obj_range  # [N, K], 0 = best, 1 = worst per objective
+        obj_range[obj_range == 0] = 1.0
+        self.y = (obj_tensor - obj_min) / obj_range  # [N, 1], 0 = best, 1 = worst
         self.obj_min = obj_min
         self.obj_range = obj_range
         self.X = X
@@ -88,27 +62,19 @@ class VesselProblem(PhysicsProblem):
                 step = 1.0
             self.steps.append(step)
 
-        # Best design minimizes sum of all normalized objectives (each in [0,1])
-        obj_sum = self.y.sum(dim=1)  # [N]
-        best_idx = torch.argmin(obj_sum).item()
+        best_idx = torch.argmin(self.y.squeeze(1)).item()
         self.best_design_found = dict(zip(self.design_params, X[best_idx].tolist()))
-        self.best_objective_found = obj_sum[best_idx].item()
+        self.best_objective_found = self.y[best_idx].item()
 
-        obj_dim = self.y.shape[1]
         print(f"\n[VesselProblem] Loaded dataset:")
-        print(f"  Objective mode: {self.objective_mode} | Alpha: {self.alpha}")
-        print(f"  Size: {len(df)} | Objectives: {obj_dim}")
-        if obj_dim == 1:
-            print(f"  Best objective: {self.obj_min.item():.6f}")
-        else:
-            labels = ['S11/2500', 'S22/185', 'Thick*0.12']
-            mins = self.obj_min.tolist()
-            print(f"  Best per objective: {dict(zip(labels, [f'{v:.4f}' for v in mins]))}")
+        print(f"  Alpha: {self.alpha}")
+        print(f"  Size: {len(df)}")
+        print(f"  Best min_val: {obj_min.item():.6f}")
         print(f"  Best design: {self.best_design_found}")
         print(f"  Parameter steps: {dict(zip(self.design_params, self.steps))}")
 
         inputs = torch.zeros(1, 1)
-        targets = torch.zeros(1, obj_dim)
+        targets = torch.zeros(1, 1)
         self._inputs = inputs
         self._targets = targets
         return inputs, targets
@@ -124,17 +90,14 @@ class VesselProblem(PhysicsProblem):
         dist = torch.norm(diff, dim=2)  # [B, N]
 
         weights = torch.softmax(-self.alpha * dist, dim=1)  # [B, N]
-        # self.y: [N, K], weights: [B, N] -> y_pred: [B, K]
-        y_pred = torch.einsum('bn,nk->bk', weights, self.y)
+        y_pred = torch.einsum('bn,nk->bk', weights, self.y)  # [B, 1]
 
         nearest_idx = torch.argmin(dist, dim=1)
         pred_rounded = self.X[nearest_idx]
 
-        # Best design minimizes sum of all normalized objectives
-        obj_sum = y_pred.sum(dim=1)  # [B]
-        min_val = obj_sum.min().item()
+        min_val = y_pred.min().item()
         if min_val < self.best_objective_found:
-            idx = torch.argmin(obj_sum).item()
+            idx = torch.argmin(y_pred.squeeze(1)).item()
             self.best_objective_found = min_val
             self.best_design_found = dict(
                 zip(self.design_params, pred_rounded[idx].detach().tolist())
@@ -157,13 +120,11 @@ class VesselProblem(PhysicsProblem):
 
     def save_results(self, history, epoch_results, output_dir, predictions, computed_output, inputs, targets):
         import os
-        from visualization.plotting import plot_loss_curves, save_vessel_epoch_results_csv, evaluate_rank, plot_multi_objective_curves
+        from visualization.plotting import plot_loss_curves, save_vessel_epoch_results_csv, evaluate_rank
 
         if epoch_results is not None:
             epoch_csv_path = os.path.join(output_dir, 'epoch_results.csv')
             save_vessel_epoch_results_csv(epoch_results, output_dir)
-            evaluate_rank(epoch_results_path=epoch_csv_path, dataset_path=self.get_data_path(), objective_mode=self.objective_mode)
-            if self.objective_mode == 'multi_objective':
-                plot_multi_objective_curves(epoch_csv_path, self.get_data_path(), output_dir)
+            evaluate_rank(epoch_results_path=epoch_csv_path, dataset_path=self.get_data_path())
 
         plot_loss_curves(history, output_dir)

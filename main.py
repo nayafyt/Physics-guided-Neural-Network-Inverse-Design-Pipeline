@@ -244,7 +244,7 @@ if __name__ == '__main__':
     # problem = IndentationProblem()          # Inverse indentation problem (default)
     # problem = YourProblem()                # Your custom physics problem
 
-    problem = VesselProblem(objective_mode='multi_objective', alpha=50.0)
+    problem = VesselProblem(alpha=50.0)
 
     # Get bounds and data path dynamically from the problem
     bounds = problem.get_bounds()
