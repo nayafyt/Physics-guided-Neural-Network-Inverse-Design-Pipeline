@@ -18,14 +18,16 @@ class VesselProblem(PhysicsProblem):
         - 'multi_objective': 3 independent objectives (S11/2500, S22/185, Thick*0.12)
     """
 
-    def __init__(self, objective_mode='min_val', alpha=10.0):
+    def __init__(self, objective_mode='min_val', alpha_start=10.0, alpha_end=500.0):
         if objective_mode not in OBJECTIVE_MODES:
             raise ValueError(f"objective_mode must be one of {OBJECTIVE_MODES}, got '{objective_mode}'")
 
         self._inputs = None
         self._targets = None
         self.objective_mode = objective_mode
-        self.alpha = alpha
+        self.alpha_start = alpha_start
+        self.alpha_end = alpha_end
+        self.alpha = alpha_start
 
         self.design_params = ['SAngle', 'Nrplies', 'Stepply', 'SymLam', 'Thickpl']
         self.bounds = [(0, 175), (8, 40), (5, 55), (0, 1), (1.0, 2.0)]
@@ -96,7 +98,7 @@ class VesselProblem(PhysicsProblem):
 
         obj_dim = self.y.shape[1]
         print(f"\n[VesselProblem] Loaded dataset:")
-        print(f"  Objective mode: {self.objective_mode} | Alpha: {self.alpha}")
+        print(f"  Objective mode: {self.objective_mode} | Alpha: {self.alpha_start} -> {self.alpha_end}")
         print(f"  Size: {len(df)} | Objectives: {obj_dim}")
         if obj_dim == 1:
             print(f"  Best objective: {self.obj_min.item():.6f}")
@@ -113,6 +115,11 @@ class VesselProblem(PhysicsProblem):
         self._targets = targets
         return inputs, targets
 
+    def set_epoch(self, epoch, total_epochs):
+        """Anneal alpha from alpha_start to alpha_end over training."""
+        progress = min(epoch / total_epochs, 1.0)
+        self.alpha = self.alpha_start + progress * (self.alpha_end - self.alpha_start)
+
     def forward_physics(self, inputs, predictions):
         X_norm = self.X.clone()
         pred_norm = predictions.clone()
@@ -124,10 +131,17 @@ class VesselProblem(PhysicsProblem):
         dist = torch.norm(diff, dim=2)  # [B, N]
 
         weights = torch.softmax(-self.alpha * dist, dim=1)  # [B, N]
-        # self.y: [N, K], weights: [B, N] -> y_pred: [B, K]
-        y_pred = torch.einsum('bn,nk->bk', weights, self.y)
 
-        nearest_idx = torch.argmin(dist, dim=1)
+        # Soft prediction (for gradients)
+        y_soft = torch.einsum('bn,nk->bk', weights, self.y)
+
+        # Hard prediction (actual nearest neighbor objective)
+        nearest_idx = torch.argmin(dist, dim=1)  # [B]
+        y_hard = self.y[nearest_idx]  # [B, K]
+
+        # Straight-through: use hard value in forward, soft gradients in backward
+        y_pred = y_hard + (y_soft - y_soft.detach())
+
         pred_rounded = self.X[nearest_idx]
 
         # Best design minimizes sum of all normalized objectives

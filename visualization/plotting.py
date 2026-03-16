@@ -146,6 +146,35 @@ def evaluate_rank(epoch_results_path, dataset_path, objective_mode='min_val'):
     thick_norm = nearest_row['Thick'] * 0.12
     min_val = nearest_row['min_val']
 
+    # NN's own predicted objectives (last epoch)
+    # These are [0,1] normalized: 0 = dataset best, 1 = dataset worst
+    # To recover real values: real = nn_val * obj_range + obj_min
+    if 'obj_S11' in epoch_df.columns:
+        nn_vals = [last_row['obj_S11'], last_row['obj_S22'], last_row['obj_Thick']]
+
+        # Recompute obj_min/obj_range from dataset (same as VesselProblem.load_data)
+        obj_raw = np.column_stack([
+            vessel_df['S11'].values / 2500.0,
+            vessel_df['S22'].values / 185.0,
+            vessel_df['Thick'].values * 0.12
+        ])
+        obj_min = obj_raw.min(axis=0)
+        obj_max = obj_raw.max(axis=0)
+        obj_range = obj_max - obj_min
+        obj_range[obj_range == 0] = 1.0
+
+        # Convert [0,1] back to original normalized scale (S11/2500, S22/185, Thick*0.12)
+        nn_real = [nn_vals[i] * obj_range[i] + obj_min[i] for i in range(3)]
+
+        labels = ['S11/2500', 'S22/185', 'Thick*0.12']
+        raw_names = ['S11', 'S22', 'Thick']
+        raw_divisors = [1/2500.0, 1/185.0, 0.12]  # to convert back to raw units
+
+        print(f"\nNN predicted objectives (last epoch) [0=best, 1=worst in dataset]:")
+        for i, (label, rname) in enumerate(zip(labels, raw_names)):
+            raw_val = nn_real[i] / raw_divisors[i]
+            print(f"  {label:12s}: {nn_vals[i]:.4f} -> {nn_real[i]:.4f}  ({rname} = {raw_val:.1f})")
+
     print(f"\nNearest dataset design:")
     print(X[nearest_idx])
     print(f"\n  S11/2500:    {s11_norm:.4f}  (S11 = {nearest_row['S11']:.1f})")
@@ -159,51 +188,69 @@ def evaluate_rank(epoch_results_path, dataset_path, objective_mode='min_val'):
     print(f"\nRank in dataset (by min_val): {rank} / {len(vessel_df)}")
     print(f"  Nearest: {min_val:.6f}  |  Dataset best: {all_min_val.min():.6f}")
 
-    if objective_mode == 'multi_objective':
-        obj_names = ['S11/2500', 'S22/185', 'Thick*0.12']
-        all_s11 = vessel_df["S11"].values / 2500.0
-        all_s22 = vessel_df["S22"].values / 185.0
-        all_thick = vessel_df["Thick"].values * 0.12
-        all_objs = [all_s11, all_s22, all_thick]
-        nearest_vals = [s11_norm, s22_norm, thick_norm]
-
-        print(f"\nSupporting objective ranks:")
-        for name, col, val in zip(obj_names, all_objs, nearest_vals):
-            rank_i = (np.argsort(np.argsort(col))[nearest_idx]) + 1
-            print(f"  {name:12s}: {val:.4f}  |  rank {rank_i:5d} / {len(vessel_df)}  (best: {col.min():.4f})")
-
     print(f"\nDistance to nearest design: {dists[nearest_idx]:.6f}")
+
+    print_dataset_bests(vessel_df, design_cols)
     print("====================================\n")
+
+
+def print_dataset_bests(vessel_df, design_cols):
+    """Print the dataset rows with the smallest S11, S22, and Thick."""
+    print(f"\n--- Dataset best designs (per objective) ---")
+    for obj, norm_label, divisor, multiply in [
+        ('S11', 'S11/2500', 2500.0, False),
+        ('S22', 'S22/185', 185.0, False),
+        ('Thick', 'Thick*0.12', 0.12, True),
+    ]:
+        idx = vessel_df[obj].idxmin()
+        row = vessel_df.loc[idx]
+        raw_val = row[obj]
+        norm_val = raw_val / divisor if not multiply else raw_val * divisor
+        design = [row[c] for c in design_cols]
+        print(f"\n  Best {obj}:")
+        print(f"    {norm_label} = {norm_val:.4f}  ({obj} = {raw_val:.4f})")
+        print(f"    Design: {design_cols} = {[f'{v:.2f}' for v in design]}")
+        print(f"    S11={row['S11']:.1f}  S22={row['S22']:.1f}  Thick={row['Thick']:.3f}  min_val={row['min_val']:.6f}")
 
 
 def plot_multi_objective_curves(epoch_results_path, dataset_path, output_dir):
     epoch_df = pd.read_csv(epoch_results_path)
+    vessel_df = pd.read_csv(dataset_path)
+    vessel_df.columns = vessel_df.columns.str.strip()
 
-    # Use the normalized [0,1] values already computed by forward_physics
+    # The CSV stores [0,1] normalized values (0=dataset min, 1=dataset max)
+    # Convert back to real scale: S11/2500, S22/185, Thick*0.12
+    obj_raw = np.column_stack([
+        vessel_df['S11'].values / 2500.0,
+        vessel_df['S22'].values / 185.0,
+        vessel_df['Thick'].values * 0.12
+    ])
+    obj_min = obj_raw.min(axis=0)
+    obj_max = obj_raw.max(axis=0)
+    obj_range = obj_max - obj_min
+    obj_range[obj_range == 0] = 1.0
+
     epochs = epoch_df['Epoch'].values
-    s11_vals = epoch_df['obj_S11'].values
-    s22_vals = epoch_df['obj_S22'].values
-    thick_vals = epoch_df['obj_Thick'].values
+    s11_vals = epoch_df['obj_S11'].values * obj_range[0] + obj_min[0]
+    s22_vals = epoch_df['obj_S22'].values * obj_range[1] + obj_min[1]
+    thick_vals = epoch_df['obj_Thick'].values * obj_range[2] + obj_min[2]
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
     axes[0].plot(epochs, s11_vals, 'b-o', markersize=2)
-    axes[0].set_title('S11 (normalized)')
+    axes[0].set_title('S11 / 2500')
     axes[0].set_xlabel('Epoch')
-    axes[0].set_ylabel('Value [0=best, 1=worst]')
-    axes[0].set_ylim(-0.05, 1.05)
+    axes[0].set_ylabel('S11 / 2500')
 
     axes[1].plot(epochs, s22_vals, 'r-o', markersize=2)
-    axes[1].set_title('S22 (normalized)')
+    axes[1].set_title('S22 / 185')
     axes[1].set_xlabel('Epoch')
-    axes[1].set_ylabel('Value [0=best, 1=worst]')
-    axes[1].set_ylim(-0.05, 1.05)
+    axes[1].set_ylabel('S22 / 185')
 
     axes[2].plot(epochs, thick_vals, 'g-o', markersize=2)
-    axes[2].set_title('Thickness (normalized)')
+    axes[2].set_title('Thick * 0.12')
     axes[2].set_xlabel('Epoch')
-    axes[2].set_ylabel('Value [0=best, 1=worst]')
-    axes[2].set_ylim(-0.05, 1.05)
+    axes[2].set_ylabel('Thick * 0.12')
 
     fig.suptitle('Multi-Objective Components Over Training')
     fig.tight_layout()

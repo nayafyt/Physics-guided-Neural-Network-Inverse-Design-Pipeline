@@ -157,6 +157,10 @@ def train(problem, bounds, data_path,
     last_saved_predictions = None  # Track last saved prediction
 
     for epoch in range(1, tighten_epochs + 1):
+        # Anneal alpha for soft nearest-neighbor sharpening
+        if hasattr(problem, 'set_epoch'):
+            problem.set_epoch(epoch, tighten_epochs)
+
         optimizer.zero_grad()
         # predictions = NN predicted design params, computed = physics simulation output from those params
         # constraint = penalty for violating parameter relationships
@@ -244,7 +248,7 @@ if __name__ == '__main__':
     # problem = IndentationProblem()          # Inverse indentation problem (default)
     # problem = YourProblem()                # Your custom physics problem
 
-    problem = VesselProblem(objective_mode='multi_objective', alpha=50.0)
+    problem = VesselProblem(objective_mode='multi_objective', alpha_start=10.0, alpha_end=500.0)
 
     # Get bounds and data path dynamically from the problem
     bounds = problem.get_bounds()
