@@ -9,6 +9,9 @@ services:
     volumes:
       - ./data:/app/data
       - ./results:/app/results
+      - ./main.py:/app/main.py
+      - ./physics:/app/physics
+      - ./visualization:/app/visualization
 
     command: ["python3", "main.py"]
 
