@@ -34,6 +34,8 @@ class VesselProblem(PhysicsProblem):
 
         self.X = None
         self.y = None
+        self.S11 = None
+        self.S22 = None
         self.min_val_min = None
         self.steps = None
         self.best_design_found = None
@@ -65,6 +67,10 @@ class VesselProblem(PhysicsProblem):
         df.columns = df.columns.str.strip()
 
         X = torch.tensor(df[self.design_params].values, dtype=torch.float32)
+
+        # Store raw S11 and S22 values for constraint checking
+        self.S11 = torch.tensor(df["S11"].values, dtype=torch.float32)
+        self.S22 = torch.tensor(df["S22"].values, dtype=torch.float32)
 
         obj_values = self._compute_objective(df)
         obj_tensor = torch.tensor(obj_values, dtype=torch.float32)
