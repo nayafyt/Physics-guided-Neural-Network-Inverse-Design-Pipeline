@@ -187,19 +187,23 @@ class VesselProblem(PhysicsProblem):
             weights = self._last_weights  # [B, N], from forward_physics
             nearest_idx = self._last_nearest_idx  # [B]
 
-            # Soft S11/S22 values (differentiable via weights)
-            s11_soft = torch.matmul(weights, self.S11.unsqueeze(1)).squeeze(1)  # [B]
-            s22_soft = torch.matmul(weights, self.S22.unsqueeze(1)).squeeze(1)  # [B]
+            # Normalize S11 and S22 to same scale as objectives
+            s11_norm = self.S11 / 2500.0  # [N]
+            s22_norm = self.S22 / 185.0   # [N]
 
-            # Hard S11/S22 values (actual nearest neighbor)
-            s11_hard = self.S11[nearest_idx]  # [B]
-            s22_hard = self.S22[nearest_idx]  # [B]
+            # Soft normalized S11/S22 values (differentiable via weights)
+            s11_soft = torch.matmul(weights, s11_norm.unsqueeze(1)).squeeze(1)  # [B]
+            s22_soft = torch.matmul(weights, s22_norm.unsqueeze(1)).squeeze(1)  # [B]
+
+            # Hard normalized S11/S22 values (actual nearest neighbor)
+            s11_hard = s11_norm[nearest_idx]  # [B]
+            s22_hard = s22_norm[nearest_idx]  # [B]
 
             # Straight-through: hard value in forward, soft gradient in backward
             s11_vals = s11_hard + (s11_soft - s11_soft.detach())
             s22_vals = s22_hard + (s22_soft - s22_soft.detach())
 
-            # Penalize S11 >= 0.6 and S22 >= 0.6
+            # Penalize S11/2500 >= 0.6 and S22/185 >= 0.6
             s11_penalty = torch.relu(s11_vals - 0.6)**2
             s22_penalty = torch.relu(s22_vals - 0.6)**2
             penalty += torch.mean(s11_penalty + s22_penalty)
