@@ -1,297 +1,183 @@
 # Physics-Guided Neural Network Inverse Design Pipeline
 
-A machine learning framework for inverse design problems using physics-informed neural networks (PINNs). This pipeline solves inverse problems by integrating domain-specific physics constraints directly into neural network training.
+A machine learning framework for inverse design problems using physics-informed neural networks. The pipeline integrates domain-specific physics constraints directly into neural network training to solve inverse problems.
 
 ## Overview
 
-This project provides a generic, extensible framework for physics-guided inverse design. The current implementation targets the **inverse indentation problem**, estimating layered material elastic moduli (E1, E2, E3) from experimental force-displacement data, but the architecture supports any physics-constrained inverse problem.
+The framework provides a generic, extensible architecture for physics-guided inverse design. Two physics problems are currently implemented:
 
-## Key Features
+- **Indentation**: Inverse material characterization — estimates layered material elastic moduli (E1, E2, E3) from experimental force-displacement data
+- **Vessel**: Pressure vessel composite layup optimization — finds design parameters (stacking angle, ply count, step, symmetry, thickness) that minimize stress and weight objectives
 
-- **Physics-Constrained Learning**: Enforces domain-specific relationships via custom loss terms
-- **Generic Framework**: Extensible `PhysicsProblem` base class for multiple physics domains
-- **Deterministic Setup**: Fixed random seeds for reproducible results
-- **Cosine-Annealed Learning Rate**: Balances exploration and exploitation
-- **Stability-Based Early Stopping**: Terminates when predictions converge
-- **Automated Result Export**: Generates CSVs and visualization plots
-- **Modular Architecture**: Easy to swap physics implementations
-
-## Supported Physics Problems
-
-### Current
-- **Indentation**: Inverse hyperelastic material characterization via nanoindentation
-- **Vessel**: Pressure vessel optimization with discrete design variables
-
+> **Multi-objective vessel optimization** (S11, S22, Thickness as independent objectives with alpha annealing and S11/S22 constraints) is available on the [`feature/vessel-multi-objective`](../../tree/feature/vessel-multi-objective) branch.
 
 ## Project Structure
 
 ```
-├── main.py                     # Generic training orchestrator
+├── main.py                        # Training orchestrator + PGNN architecture
 ├── physics/
-│   ├── base.py                 # Abstract PhysicsProblem base class
-│   ├── indentation.py          # IndentationProblem implementation
-│   ├── vessel.py               # VesselProblem implementation
-│   └── [your_problem].py       # Add custom physics problems here ←
+│   ├── base.py                    # Abstract PhysicsProblem base class
+│   ├── indentation.py             # Indentation problem implementation
+│   └── vessel.py                  # Vessel problem implementation
 ├── visualization/
-│   └── plotting.py             # Plotting and CSV export utilities
+│   └── plotting.py                # Plotting and CSV export utilities
 ├── data/
-│   └── data.csv                # Experimental data
-├── results/                    # Output directory with predictions
+│   ├── data.csv                   # Indentation experimental data
+│   └── pressure_vessel_DS.csv     # Vessel design dataset (52k designs)
+├── results/                       # Output directory
 ├── Dockerfile, docker-compose.yml
 └── README.md
 ```
 
 ## Installation
 
-### Local Setup
+### Local
 
 ```bash
 git clone <repository-url>
 cd Physics-guided-Neural-Network-Inverse-Design-Pipeline
+pip install -r requirements.txt
+python main.py
 ```
 
-### Docker Setup
+### Docker
 
 ```bash
 docker compose up --build
 ```
-
-## Usage
-
-### Training
-
-```bash
-python main.py
-```
-
-The script will:
-1. Load data from the problem's data file (specified by `problem.get_data_path()`)
-2. Train the physics-guided neural network
-3. Export predictions to `results/` directory
-4. Generate visualization plots and loss curves
-
-### Configuration
-
-All configuration options are in `main.py` with detailed comments explaining what each parameter does:
-
-- **Problem Selection** (line ~247): Choose between `IndentationProblem`, `VesselProblem`, or your custom problem
-- **Network Architecture** (line ~257):
-  - `num_hidden_layers`: Number of hidden layers (try 2-5)
-  - `hidden_dim`: Width of each layer (try 32, 64, 72, 128)
-- **Training Hyperparameters** (line ~263):
-  - `patience`: Early stopping patience if loss plateaus (default 250)
-  - `tighten_epochs`: Maximum training epochs (default 1500)
-  - `stable_epochs`: Consecutive stable epochs before stopping (default 6)
-
-The comments in `main.py` provide tuning guidance for each parameter based on whether your model is underfitting, overfitting, or converging too early.
-
-### Data Format
-
-Each physics problem specifies its own data path via `get_data_path()`. Example for indentation:
-
-`data/data.csv`:
-```
-ind,force
-0.0,0.0
-0.01,0.5
-0.02,1.2
-...
-```
-Where `ind` is indentation (mm) and `force` is load (mN).
 
 ## Model Architecture
 
-### PGNN (Physics-Guided Neural Network)
+The PGNN (Physics-Guided Neural Network) is a feedforward network with bounded outputs:
 
-- **Input**: Problem-specific measurements (e.g., [force, indentation] for indentation problem)
-- **Output**: Material/design parameters (e.g., [E1, E2, E3] elastic moduli)
-- **Hidden layers**: Configurable (default 3 layers × 72 neurons)
-- **Normalization**: LayerNorm for single-sample problems, BatchNorm1d for batch problems
-- **Activation**: Tanh in hidden layers, bounded output via `CustomActivation` (tanh scaling to parameter ranges)
-
-### Physics Integration
-
-- **Forward Physics**: Domain-specific differentiable model (e.g., Hertzian contact mechanics for indentation)
-- **Constraint Loss**: Enforces physical relationships (e.g., E2 ≥ E3 stiffness ordering)
-- **Total Loss**: `Total = MSE(observed, physics_output) + λ × constraint_loss`
-- **Optimizer**: Adam with learning rate 1e-3
-- **Scheduler**: Cosine annealing (T_max=tighten_epochs, eta_min=1e-5)
-- **Gradient Clipping**: Max norm 1.0 to stabilize training
-
-## Output
-
-After training, results are saved to `results/ProblemName_param1_param2_param3/`:
-
-- **loss_curves.png**: Training/constraint loss over epochs
-- **force_indentation.png** (indentation): Measured vs predicted forces
-- **epoch_results.csv** (vessel): Design parameter evolution during optimization
-- **Pred_E1_E2_E3.csv** (indentation): Final predicted force-indentation curve
-
-## Quick Start: Add Your Own Physics Problem
-
-The framework is modular and extensible. Here's the quickest path to add a new problem:
-
-### Step 1: Create Your Physics Problem Class
-
-Create `physics/your_problem.py`:
-
-```python
-from physics.base import PhysicsProblem
-import torch
-import pandas as pd
-
-class YourProblem(PhysicsProblem):
-    def __init__(self):
-        # Initialize your problem-specific parameters
-        pass
-    
-    def get_input_output_dims(self):
-        """Return (input_dim, output_dim) for your problem."""
-        return 3, 2  # Example: 3 inputs → 2 outputs
-    
-    def get_bounds(self):
-        """Return parameter bounds as list of (min, max) tuples."""
-        return [(0, 100), (1, 50)]  # Bounds for each output
-    
-    def get_data_path(self):
-        """Return path to your data CSV file."""
-        return 'data/your_data.csv'
-    
-    def load_data(self, path):
-        """Load and preprocess data. Return (input_tensor, observation_tensor)."""
-        df = pd.read_csv(path)
-        inp = torch.tensor(df[['col1', 'col2', 'col3']].values, dtype=torch.float32)
-        obs = torch.tensor(df['target'].values, dtype=torch.float32).unsqueeze(1)
-        return inp, obs
-    
-    def forward_physics(self, inp, predictions):
-        """Implement your differentiable physics model."""
-        x = inp[:, 0]
-        p1, p2 = predictions[:, 0], predictions[:, 1]
-        output = p1 * x + p2  # Your physics equations here
-        return output.unsqueeze(1)
-    
-    def constraint_loss(self, predictions):
-        """Optional: Enforce physical constraints. Return scalar loss."""
-        return 0.0  # No constraints if not needed
-    
-    def save_results(self, history, epoch_results, output_dir, predictions, physics_output, inp, obs):
-        """Optional: Custom result saving. Call parent method or implement custom plots."""
-        from visualization.plotting import plot_loss_curves
-        plot_loss_curves(history, output_dir)
-```
-
-### Step 2: Switch Problem in main.py
-
-In `main.py`, around line 247:
-
-```python
-from physics.your_problem import YourProblem  # Add this import
-
-if __name__ == '__main__':
-    problem = YourProblem()  # ← Change this line
-    # problem = IndentationProblem()
-    # problem = VesselProblem()
-```
-
-### Step 3: Prepare Your Data
-
-Create `data/your_data.csv` with columns matching your `load_data()` method.
-
-### Step 4: Run Training
-
-```bash
-python main.py
-# or with Docker:
-docker compose up --build
-```
-
-Results appear in `results/YourProblem_param1_param2_param3/`
-
-## Extending the Framework (Detailed Reference)
-
-For advanced customization beyond the Quick Start, here are all the methods you can override:
-
-### PhysicsProblem Base Class Methods
-
-Every physics problem must inherit from `PhysicsProblem` and implement:
-
-```python
-class PhysicsProblem(ABC):
-    @abstractmethod
-    def get_input_output_dims(self) -> tuple:
-        """Return (input_dim, output_dim) for your problem."""
-        pass
-    
-    @abstractmethod
-    def get_bounds(self) -> list:
-        """Return parameter bounds: [(min1, max1), (min2, max2), ...]"""
-        pass
-    
-    @abstractmethod
-    def get_data_path(self) -> str:
-        """Return path to data CSV file."""
-        pass
-    
-    @abstractmethod
-    def load_data(self, path: str) -> tuple:
-        """Load data. Return (input_tensor, observation_tensor)."""
-        pass
-    
-    @abstractmethod
-    def forward_physics(self, inp, predictions):
-        """Implement physics model. Returns physics-based predictions."""
-        pass
-    
-    @abstractmethod
-    def constraint_loss(self, predictions):
-        """Optional constraints. Return scalar loss (0 if none)."""
-        pass
-    
-    def get_output_dir_name(self, predictions) -> str:
-        """Optional: Custom output directory naming. Default uses parameter values."""
-        pass
-    
-    def save_results(self, history, epoch_results, output_dir, predictions, physics_output, inp, obs):
-        """Optional: Custom result visualization and saving."""
-        pass
-```
-
-### Real-World Example: IndentationProblem
-
-See [physics/indentation.py](physics/indentation.py) for a complete example implementing all methods for inverse material characterization.
-
-## Requirements
-
-- Python 3.10+
-- PyTorch 2.0+
-- NumPy, SciPy
-- Pandas, Matplotlib
-
-## Training Details
-
-### Optimization Strategy
-
-- **Optimizer**: Adam with learning rate 1e-3
-- **Scheduler**: Cosine annealing (T_max=tighten_epochs, eta_min=1e-5) for balanced exploration/exploitation
-- **Gradient Clipping**: Max norm 1.0
-- **Early Stopping**: Triggered by either:
-  - Loss plateau (no improvement for `patience` epochs)
-  - Output stability (predictions stable to first decimal for `stable_epochs` epochs)
+- **Hidden layers**: Configurable depth and width (default: 3 layers × 72 neurons)
+- **Activation**: Tanh in hidden layers
+- **Output bounding**: Each output is mapped to its physical range via `CustomActivation`:
+  ```
+  output = min + (max - min) × (tanh(x) + 1) / 2
+  ```
+- **Normalization**: LayerNorm (batch_size=1) or BatchNorm1d (batch_size>1)
+- **Optimizer**: Adam (lr=1e-3) with cosine annealing to 1e-5
+- **Gradient clipping**: Max norm 1.0
 
 ### Loss Function
 
 ```
-Total Loss = Data Loss + λ × Constraint Loss
-
-Data Loss = MSE(observations, physics_output)
-Constraint Loss = physics_problem.constraint_loss(predictions)
-λ = 1.0
+Total Loss = MSE(targets, physics_output) + λ × constraint_loss
 ```
 
-### Reproducibility
+## Vessel Problem
 
-- Deterministic setup with fixed seed (SEED=42)
-- Disabled CUDA non-determinism
-- Xavier initialization for weights
-- Consistent results across runs
+### Objective Modes
+
+The vessel problem supports two modes, selected via the `objective_mode` parameter:
+
+- **`min_val`**: Single pre-computed objective from the dataset
+- **`multi_objective`**: Three independent normalized objectives:
+  - S11/2500 (stress component 1)
+  - S22/185 (stress component 2)
+  - Thick×0.12 (laminate thickness)
+
+### How It Works
+
+The neural network predicts 5 design parameters and a **soft nearest-neighbor lookup** finds the corresponding objectives from a pre-simulated dataset of 52,272 designs:
+
+1. Normalize predicted design and all dataset entries to [0, 1]
+2. Compute Euclidean distance to every dataset design
+3. Compute soft weights via temperature-scaled softmax: `w[i] = softmax(-α × dist[i])`
+4. **Straight-through estimator**: forward pass uses the hard nearest neighbor value, backward pass uses soft gradients for smooth optimization
+
+### Alpha Annealing
+
+The temperature parameter α anneals linearly from `alpha_start` (default 10) to `alpha_end` (default 500) over training:
+- Low α (early): weights spread across many neighbors → exploration
+- High α (late): weights concentrate on the single closest neighbor → exploitation
+
+### Constraints
+
+- **Bounds**: Each design parameter is constrained to its physical range via the output activation
+- **S11/S22**: Soft penalty for designs with S11/2500 ≥ 0.6 or S22/185 ≥ 0.6, using soft nearest-neighbor weights for proper gradient flow
+
+## Indentation Problem
+
+Estimates layered material elastic moduli (E1, E2, E3) from force-indentation data using a differentiable layered material stiffness model based on beam theory.
+
+- **Input**: Force and indentation measurements
+- **Output**: Three elastic moduli (E1, E2, E3) with bounds in MPa
+- **Physics**: Computes effective stiffness from predicted moduli and layer geometry
+- **Constraint**: Enforces E2 ≥ E3 (stiffness ordering)
+
+## Configuration
+
+All parameters are in `main.py`:
+
+```python
+# Problem selection
+problem = VesselProblem(objective_mode='multi_objective', alpha_start=10.0, alpha_end=500.0)
+
+# Network architecture
+num_hidden_layers = 3      # Try: 2, 3, 4, 5
+hidden_dim = 72            # Try: 32, 64, 72, 128
+
+# Training
+patience = 250             # Early stopping if no loss improvement
+tighten_epochs = 10000     # Maximum training epochs
+stable_epochs = 6          # Stop if predictions stable for N epochs
+```
+
+## Output
+
+Results are saved to `results/ProblemName_param1_param2_.../`:
+
+- **loss_curves.png**: Total, data, and constraint loss over epochs
+- **epoch_results.csv** (vessel): Design parameter and objective evolution
+- **multi_objective_curves.png** (vessel, multi_objective mode): S11, S22, Thick convergence plots
+- **force_indentation.png** (indentation): Measured vs predicted force curves
+- **Pred_E1_E2_E3.csv** (indentation): Predicted force-indentation curve
+
+## Adding a New Physics Problem
+
+Create `physics/your_problem.py` inheriting from `PhysicsProblem`:
+
+```python
+from physics.base import PhysicsProblem
+import torch
+
+class YourProblem(PhysicsProblem):
+    def get_input_output_dims(self):
+        return input_dim, output_dim
+
+    def get_bounds(self):
+        return [(min1, max1), (min2, max2), ...]
+
+    def get_data_path(self):
+        return 'data/your_data.csv'
+
+    def load_data(self, path):
+        # Return (input_tensor, target_tensor)
+        ...
+
+    def forward_physics(self, inputs, predictions):
+        # Differentiable physics model
+        ...
+
+    def constraint_loss(self, predictions):
+        # Physical constraints (return 0.0 if none)
+        return 0.0
+
+    def save_results(self, history, epoch_results, output_dir,
+                     predictions, computed_output, inputs, targets):
+        from visualization.plotting import plot_loss_curves
+        plot_loss_curves(history, output_dir)
+```
+
+Then select it in `main.py`:
+```python
+problem = YourProblem()
+```
+
+## Requirements
+
+- Python 3.13+
+- PyTorch 2.9+
+- NumPy, SciPy, Pandas, Matplotlib
