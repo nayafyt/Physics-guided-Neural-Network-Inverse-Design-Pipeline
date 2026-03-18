@@ -40,8 +40,9 @@ class VesselProblem(PhysicsProblem):
         self.best_objective_found = float('inf')
 
     def get_input_output_dims(self):
-        # Dummy input (not used) + output_dim auto-sized from design_params
-        return 1, len(self.design_params)
+        # Input = desired objective targets (one per objective)
+        obj_dim = 1 if self.objective_mode == 'min_val' else 3
+        return obj_dim, len(self.design_params)
 
     def get_bounds(self):
         return self.bounds
@@ -109,7 +110,9 @@ class VesselProblem(PhysicsProblem):
         print(f"  Best design: {self.best_design_found}")
         print(f"  Parameter steps: {dict(zip(self.design_params, self.steps))}")
 
-        inputs = torch.zeros(1, 1)
+        # Input = desired objective targets (all zeros = minimize everything)
+        # Target = same values, so MSE drives predictions toward these goals
+        inputs = torch.zeros(1, obj_dim)
         targets = torch.zeros(1, obj_dim)
         self._inputs = inputs
         self._targets = targets
