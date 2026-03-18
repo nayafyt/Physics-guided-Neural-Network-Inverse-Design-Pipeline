@@ -40,6 +40,8 @@ class VesselProblem(PhysicsProblem):
         self.steps = None
         self.best_design_found = None
         self.best_objective_found = float('inf')
+        self._last_weights = None
+        self._last_nearest_idx = None
 
     def get_input_output_dims(self):
         # Input = desired objective targets (one per objective)
@@ -153,6 +155,10 @@ class VesselProblem(PhysicsProblem):
 
         pred_rounded = self.X[nearest_idx]
 
+        # Cache weights and nearest_idx for use in constraint_loss
+        self._last_weights = weights
+        self._last_nearest_idx = nearest_idx
+
         # Best design minimizes sum of all normalized objectives
         obj_sum = y_pred.sum(dim=1)  # [B]
         min_val = obj_sum.min().item()
@@ -166,13 +172,38 @@ class VesselProblem(PhysicsProblem):
         return y_pred
 
     def constraint_loss(self, predictions):
-        """Penalty if designs go outside valid bounds."""
+        """Penalty if designs go outside valid bounds or violate S11/S22 constraints."""
         penalty = 0.0
+
+        # Penalty for bounds violations
         for i, (lo, hi) in enumerate(self.bounds):
             penalty += torch.mean(
                 torch.relu(lo - predictions[:, i])**2 +
                 torch.relu(predictions[:, i] - hi)**2
             )
+
+        # Penalty for S11 >= 0.6 and S22 >= 0.6 using soft lookup (differentiable)
+        if self.S11 is not None and self.S22 is not None and self._last_weights is not None:
+            weights = self._last_weights  # [B, N], from forward_physics
+            nearest_idx = self._last_nearest_idx  # [B]
+
+            # Soft S11/S22 values (differentiable via weights)
+            s11_soft = torch.matmul(weights, self.S11.unsqueeze(1)).squeeze(1)  # [B]
+            s22_soft = torch.matmul(weights, self.S22.unsqueeze(1)).squeeze(1)  # [B]
+
+            # Hard S11/S22 values (actual nearest neighbor)
+            s11_hard = self.S11[nearest_idx]  # [B]
+            s22_hard = self.S22[nearest_idx]  # [B]
+
+            # Straight-through: hard value in forward, soft gradient in backward
+            s11_vals = s11_hard + (s11_soft - s11_soft.detach())
+            s22_vals = s22_hard + (s22_soft - s22_soft.detach())
+
+            # Penalize S11 >= 0.6 and S22 >= 0.6
+            s11_penalty = torch.relu(s11_vals - 0.6)**2
+            s22_penalty = torch.relu(s22_vals - 0.6)**2
+            penalty += torch.mean(s11_penalty + s22_penalty)
+
         return penalty
 
     def get_best_design(self):
